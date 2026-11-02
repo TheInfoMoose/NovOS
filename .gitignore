@@ -34,5 +34,4 @@ logs/
 *.log
 *.logs.txt
 
-# Local and agent Markdown files
-*.md
+

@@ -656,6 +656,10 @@ verify_stage4_post() {
         "/usr/share/backgrounds/novos/nova-wallpaper.png"
         "/usr/share/pixmaps/novos-logo.png"
         "/etc/skel/.config/cosmic/com.system76.CosmicTheme.Dark.Builder/v1/accent"
+        "/usr/share/cosmic/com.system76.CosmicTheme.Dark/v2/list_button"
+        "/usr/share/cosmic/com.system76.CosmicTheme.Dark/v2/is_frosted"
+        "/etc/skel/.config/cosmic/com.system76.CosmicBackground/v1/all"
+        "/var/lib/cosmic-greeter/.config/cosmic/com.system76.CosmicBackground/v1/all"
     )
     local f
     for f in "${files[@]}"; do
@@ -666,6 +670,13 @@ verify_stage4_post() {
             echo "[OK]   [Stage 4 Gate] Verified file: ${root}${f}"
         fi
     done
+
+    if [[ ! -f "${root}/etc/greetd/config.toml" ]] || ! grep -q 'user = "cosmic-greeter"' "${root}/etc/greetd/config.toml"; then
+        echo "[FAIL] [Stage 4 Gate] ${root}/etc/greetd/config.toml missing or does not contain user = \"cosmic-greeter\"" >&2
+        errors=$((errors + 1))
+    else
+        echo "[OK]   [Stage 4 Gate] Verified user = \"cosmic-greeter\" in ${root}/etc/greetd/config.toml"
+    fi
 
     local seatd_masked="false"
     local unit_path

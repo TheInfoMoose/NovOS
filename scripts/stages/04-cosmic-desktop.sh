@@ -39,6 +39,19 @@ if [ -f /etc/apt/apt.conf.d/80snapper ]; then
 fi
 rm -f /etc/apt/apt.conf.d/80snapper
 
+for theme_dir in /usr/share/cosmic/com.system76.CosmicTheme.Dark /usr/share/cosmic/com.system76.CosmicTheme.Light; do
+    if [[ -d "${theme_dir}/v1" ]]; then
+        mkdir -p "${theme_dir}/v2"
+        for key_file in "${theme_dir}/v1/"*; do
+            [[ -f "$key_file" ]] || continue
+            base_key="$(basename "$key_file")"
+            if [[ ! -f "${theme_dir}/v2/${base_key}" ]]; then
+                cp -a "$key_file" "${theme_dir}/v2/${base_key}"
+            fi
+        done
+    fi
+done
+
 # CRITICAL FIX: Ensure seatd is NEVER running so libseat1/cosmic-comp uses systemd-logind exclusively
 systemctl disable --now seatd.service 2>/dev/null || true
 systemctl mask seatd.service 2>/dev/null || true
@@ -121,12 +134,19 @@ groupadd -f cosmic-greeter
 if ! id -u cosmic-greeter >/dev/null 2>&1; then
     useradd -r -g cosmic-greeter -G video,render,input,audio -d /var/lib/cosmic-greeter -s /usr/sbin/nologin cosmic-greeter
 fi
+usermod -d /var/lib/cosmic-greeter cosmic-greeter 2>/dev/null || true
+for grp in video render input audio _greetd; do
+    if getent group "$grp" >/dev/null 2>&1; then
+        usermod -aG "$grp" cosmic-greeter 2>/dev/null || true
+    fi
+done
 mkdir -p /var/lib/cosmic-greeter /var/lib/greetd /var/cache/tuigreet
-chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter
 if id -u _greetd >/dev/null 2>&1; then
-    usermod -aG video,render,input,audio,cosmic-greeter _greetd
-    chown -R _greetd:_greetd /var/lib/greetd /var/cache/tuigreet
+    usermod -aG video,render,input,audio,cosmic-greeter _greetd 2>/dev/null || true
+    chown -R _greetd:_greetd /var/lib/greetd
 fi
+chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet
+chmod 0755 /var/lib/cosmic-greeter /var/cache/tuigreet
 
 # 1. Missing Debian PAM profiles for cosmic-greeter and greetd
 cat << 'EOF' > /etc/pam.d/cosmic-greeter
@@ -200,12 +220,24 @@ fi
 cat << 'EOF' > /usr/local/bin/cosmic-greeter-app
 #!/usr/bin/env bash
 export COSMIC_DATA_CONTROL_ENABLED=1
-/usr/bin/cosmic-greeter "$@"
-rc=$?
-if [ -n "${PPID:-}" ] && [ "$PPID" -gt 1 ] && kill -0 "$PPID" 2>/dev/null; then
-    kill -TERM "$PPID" 2>/dev/null || true
+BG_PID=""
+if [ -x /usr/bin/cosmic-bg ]; then
+    /usr/bin/cosmic-bg &
+    BG_PID=$!
 fi
-exit "$rc"
+RC=0
+/usr/bin/cosmic-greeter "$@" || RC=$?
+if [ -n "$BG_PID" ]; then
+    kill "$BG_PID" 2>/dev/null || true
+fi
+if [ "$RC" -eq 0 ]; then
+    if [ -n "${PPID:-}" ] && [ "$PPID" -gt 1 ] && kill -0 "$PPID" 2>/dev/null; then
+        kill -TERM "$PPID" 2>/dev/null || true
+    fi
+    exit 0
+else
+    exit "$RC"
+fi
 EOF
 chmod 0755 /usr/local/bin/cosmic-greeter-app
 
@@ -225,12 +257,6 @@ for _ in 1 2 3 4 5; do
     ls /dev/dri/card* >/dev/null 2>&1 && break
     sleep 1
 done
-
-if grep -qiE 'vmwgfx|vboxvideo|qxl|bochs|simpledrm' /sys/class/drm/card*/device/uevent /sys/class/drm/card*/uevent 2>/dev/null; then
-    export LIBGL_ALWAYS_SOFTWARE=1
-    export ICED_BACKEND=tiny-skia
-    export WGPU_BACKEND=gl
-fi
 
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -268,7 +294,7 @@ vt = 7
 
 [default_session]
 command = "/usr/local/bin/cosmic-greeter-launch"
-user = "_greetd"
+user = "cosmic-greeter"
 EOF
 
 mkdir -p /etc/systemd/system/greetd.service.d
@@ -282,6 +308,8 @@ TTYPath=/dev/tty7
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
+StandardOutput=journal
+StandardError=journal
 EOF
 
 echo "==> [Stage 4.4] Registering Flathub & Enabling Graphical Target Services..."
@@ -298,15 +326,51 @@ cp -f /root/novos-build/branding/novos-logo.svg /usr/share/pixmaps/novos-logo.sv
 cp -f /root/novos-build/branding/novos-logo.png /usr/share/pixmaps/novos-logo.png
 cp -f /root/novos-build/branding/novos-logo.svg /usr/share/icons/hicolor/scalable/apps/novos-logo.svg
 
+mkdir -p /usr/share/cosmic/com.system76.CosmicBackground/v1
+cat << 'RON' > /usr/share/cosmic/com.system76.CosmicBackground/v1/all
+(
+    output: "all",
+    source: Path("/usr/share/backgrounds/novos/nova-wallpaper.png"),
+    filter_by_theme: true,
+    rotation_frequency: 300,
+    filter_method: Lanczos,
+    scaling_mode: Zoom,
+    sampling_method: Alphanumeric,
+)
+RON
+printf 'true\n' > /usr/share/cosmic/com.system76.CosmicBackground/v1/same-on-all
+
 provision_cosmic_theme() {
     local cfg_base="$1"
     mkdir -p \
+        "${cfg_base}/com.system76.CosmicBackground/v1" \
+        "${cfg_base}/com.system76.CosmicBg/v1" \
         "${cfg_base}/com.system76.CosmicTheme.Mode/v1" \
         "${cfg_base}/com.system76.CosmicTheme.Dark.Builder/v1" \
-        "${cfg_base}/com.system76.CosmicBg/v1"
+        "${cfg_base}/com.system76.CosmicTheme.Dark.Builder/v2" \
+        "${cfg_base}/com.system76.CosmicTheme.Dark/v1" \
+        "${cfg_base}/com.system76.CosmicTheme.Dark/v2"
+
+    if [[ -d /usr/share/cosmic/com.system76.CosmicTheme.Dark ]]; then
+        cp -a /usr/share/cosmic/com.system76.CosmicTheme.Dark/v1/* "${cfg_base}/com.system76.CosmicTheme.Dark/v1/" 2>/dev/null || true
+        cp -a /usr/share/cosmic/com.system76.CosmicTheme.Dark/v2/* "${cfg_base}/com.system76.CosmicTheme.Dark/v2/" 2>/dev/null || true
+    fi
 
     printf 'true\n' > "${cfg_base}/com.system76.CosmicTheme.Mode/v1/is_dark"
     printf '(red: 1.0, green: 0.41960785, blue: 0.101960786)\n' > "${cfg_base}/com.system76.CosmicTheme.Dark.Builder/v1/accent"
+    printf '(red: 1.0, green: 0.41960785, blue: 0.101960786)\n' > "${cfg_base}/com.system76.CosmicTheme.Dark.Builder/v2/accent"
+    cat << 'RON' > "${cfg_base}/com.system76.CosmicBackground/v1/all"
+(
+    output: "all",
+    source: Path("/usr/share/backgrounds/novos/nova-wallpaper.png"),
+    filter_by_theme: true,
+    rotation_frequency: 300,
+    filter_method: Lanczos,
+    scaling_mode: Zoom,
+    sampling_method: Alphanumeric,
+)
+RON
+    printf 'true\n' > "${cfg_base}/com.system76.CosmicBackground/v1/same-on-all"
     cat << 'RON' > "${cfg_base}/com.system76.CosmicBg/v1/all"
 (
     output: "all",
@@ -326,7 +390,8 @@ provision_cosmic_theme "/var/lib/cosmic-greeter/.config/cosmic"
 provision_cosmic_theme "/var/lib/greetd/.config/cosmic"
 
 chown -R "${DEFAULT_USER}:${DEFAULT_USER}" "/home/${DEFAULT_USER}/.config"
-chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter
+chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet
+chmod 0755 /var/lib/cosmic-greeter /var/cache/tuigreet
 if id -u _greetd >/dev/null 2>&1; then
     chown -R _greetd:_greetd /var/lib/greetd
 fi

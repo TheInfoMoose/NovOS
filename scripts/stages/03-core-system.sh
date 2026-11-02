@@ -351,13 +351,13 @@ comment: machine-id=${MACHINE_ID}
     //Primary (XanMod x64v3 Performance Kernel)
     protocol: linux
     path: boot():/kernels/vmlinuz-primary
-    cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@ quiet systemd.gpt_auto=0 split_lock_detect=off nowatchdog
+    cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@ quiet systemd.gpt_auto=0 split_lock_detect=off nowatchdog clearcpuid=rdseed loglevel=3
     module_path: boot():/kernels/initrd-primary.img
 
     //Fallback (Debian Stable Kernel)
     protocol: linux
     path: boot():/kernels/vmlinuz-lts-fallback
-    cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@ quiet systemd.gpt_auto=0
+    cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@ quiet systemd.gpt_auto=0 clearcpuid=rdseed loglevel=3
     module_path: boot():/kernels/initrd-lts-fallback.img
 
     /+Bootable Btrfs Snapshots (Read-Write Ready)
@@ -399,7 +399,7 @@ if [ -d "/.snapshots" ]; then
         //Snapshot #${num} (${date_str} - ${desc}) [${snap_kver:-primary}]
         protocol: linux
         path: ${k_path}
-        cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@snapshots/${num}/snapshot quiet systemd.gpt_auto=0 split_lock_detect=off nowatchdog
+        cmdline: root=UUID=${ROOT_UUID} rw rootflags=subvol=/@snapshots/${num}/snapshot quiet systemd.gpt_auto=0 split_lock_detect=off nowatchdog clearcpuid=rdseed loglevel=3
         module_path: ${i_path}
 SNAP
     done

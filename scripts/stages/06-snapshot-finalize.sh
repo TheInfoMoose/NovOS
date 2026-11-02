@@ -73,9 +73,10 @@ vt = 7
 
 [default_session]
 command = "/usr/local/bin/cosmic-greeter-launch"
-user = "_greetd"
+user = "cosmic-greeter"
 EOF
     fi
+    chroot "${MOUNT_ROOT}" chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet 2>/dev/null || true
     rm -f "${MOUNT_ROOT}/etc/sudoers.d/99-novos-live" \
           "${MOUNT_ROOT}/etc/polkit-1/rules.d/49-novos-live-calamares.rules" \
           "${MOUNT_ROOT}/usr/share/applications/install-novos.desktop" \
@@ -484,13 +485,13 @@ term_palette: 0b0c10;ff6b1a;ff9e44;ffb347;5294e2;d3869b;8ec07c;ebdbb2
     //Boot NovOS Live (XanMod x64v3 + COSMIC DE + Calamares Installer)
     protocol: linux
     path: boot():/live/vmlinuz
-    cmdline: boot=live components quiet noeject systemd.gpt_auto=0 split_lock_detect=off nowatchdog
+    cmdline: boot=live components quiet noeject systemd.gpt_auto=0 split_lock_detect=off nowatchdog clearcpuid=rdseed loglevel=3
     module_path: boot():/live/initrd.img
 
     //Boot NovOS Live (Safe Graphics / Software KMS)
     protocol: linux
     path: boot():/live/vmlinuz
-    cmdline: boot=live components noeject systemd.gpt_auto=0 systemd.setenv=LIBGL_ALWAYS_SOFTWARE=1 systemd.setenv=COSMIC_DISABLE_DIRECT_SCANOUT=1 split_lock_detect=off nowatchdog
+    cmdline: boot=live components noeject systemd.gpt_auto=0 systemd.setenv=LIBGL_ALWAYS_SOFTWARE=1 systemd.setenv=COSMIC_DISABLE_DIRECT_SCANOUT=1 split_lock_detect=off nowatchdog clearcpuid=rdseed loglevel=3
     module_path: boot():/live/initrd.img
 EOF
 cp -f "${ISO_WORK}/boot/limine/limine.conf" "${ISO_WORK}/limine.conf"
