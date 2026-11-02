@@ -11,6 +11,11 @@ export DEBIAN_FRONTEND=noninteractive
 source /root/novos-build/config/build.env
 source /root/novos-build/scripts/lib/verify-deps.sh
 
+if ! ([[ -f /root/novos-build/config/build.env ]] && command -v apt-get >/dev/null 2>&1); then
+    echo "[FATAL] Stage 3 must be executed inside the Debian sid chroot (/root/novos-build/config/build.env and apt-get required)." >&2
+    exit 1
+fi
+
 if ! grep -q "/usr/local/sbin" /root/.bashrc 2>/dev/null; then
     echo 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' >> /root/.bashrc
 fi
@@ -26,7 +31,12 @@ EOF
 cat << 'EOF' > /etc/apt/apt.conf.d/01-novos-safety
 APT::Get::AutomaticRemove "false";
 APT::Get::HideAutoRemove "1";
-Acquire::Retries "3";
+Acquire::Retries "5";
+Acquire::http::Pipeline-Depth "0";
+Acquire::http::No-Cache "true";
+Acquire::https::No-Cache "true";
+Acquire::BrokenProxy "true";
+Acquire::By-Hash "yes";
 DPkg::NoTriggers "false";
 APT::NeverAutoRemove {
   "^firmware-.*";
@@ -174,7 +184,28 @@ echo "==> [Stage 3.6] Installing Dual Kernels (XanMod x64v3 Primary + Locked Deb
 apt-get install -y --no-remove linux-image-amd64 linux-headers-amd64
 apt-mark manual linux-image-amd64 linux-headers-amd64 $(dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*-amd64' 'linux-headers-[0-9]*-amd64' 2>/dev/null || true)
 
-apt-get install -y --no-remove linux-xanmod-x64v3
+XANMOD_INSTALLED="false"
+for attempt in 1 2 3; do
+    echo "==> [Stage 3.6] Installing linux-xanmod-x64v3 (attempt ${attempt}/3)..."
+    if apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true install -y --no-remove linux-xanmod-x64v3; then
+        XANMOD_INSTALLED="true"
+        break
+    fi
+    echo "[WARN] linux-xanmod-x64v3 install attempt ${attempt} failed; purging partial APT cache and refreshing lists..." >&2
+    apt-get clean
+    rm -f /var/cache/apt/archives/partial/* /var/lib/apt/lists/*xanmod* 2>/dev/null || true
+    apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true update || true
+done
+
+if [[ "$XANMOD_INSTALLED" != "true" ]]; then
+    echo "[WARN] linux-xanmod-x64v3 meta-package failed (e.g. Hash Sum mismatch); resolving concrete XanMod image & headers via apt-cache..." >&2
+    XANMOD_IMG="$(apt-cache search --names-only '^linux-image-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1 || true)"
+    XANMOD_HDR="$(apt-cache search --names-only '^linux-headers-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1 || true)"
+    if [[ -n "$XANMOD_IMG" && -n "$XANMOD_HDR" ]]; then
+        apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true install -y --no-remove "$XANMOD_IMG" "$XANMOD_HDR" || true
+    fi
+fi
+
 apt-get install -y --no-install-recommends dkms libelf-dev clang lld llvm
 
 echo "==> [Stage 3.7] Installing AMD/Intel Firmware & Unified Mesa 26+ RDNA4 (RX 9070 XT) Stack..."
@@ -241,6 +272,15 @@ for kver in $(ls -1 /lib/modules/ | sort -V); do
     dracut --force --kver "$kver" "/boot/initrd.img-${kver}"
     /etc/kernel/postinst.d/zz-sync-limine "$kver"
 done
+
+if [[ ! -f /boot/efi/kernels/vmlinuz-primary && -f /boot/efi/kernels/vmlinuz-lts-fallback ]]; then
+    echo "[WARN] Primary XanMod kernel absent; seeding vmlinuz-primary and initrd-primary.img from Debian fallback kernel..." >&2
+    cp -f /boot/efi/kernels/vmlinuz-lts-fallback /boot/efi/kernels/vmlinuz-primary
+    cp -f /boot/efi/kernels/initrd-lts-fallback.img /boot/efi/kernels/initrd-primary.img
+    if [[ -f /boot/efi/kernels/fallback.version ]]; then
+        cp -f /boot/efi/kernels/fallback.version /boot/efi/kernels/primary.version
+    fi
+fi
 
 # Prepare Snapper root config template with strict 5-snapshot retention limit,
 # keeping SNAPPER_CONFIGS="" during build/Live session (Calamares enables SNAPPER_CONFIGS="root" on target install)

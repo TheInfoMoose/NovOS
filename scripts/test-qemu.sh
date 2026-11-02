@@ -45,9 +45,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; }; then
     echo "Installing QEMU/KVM and OVMF UEFI firmware..."
-    sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+    if command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm --needed qemu-system-x86 qemu-ui-gtk edk2-ovmf
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+    else
+        echo "[ERROR] Missing QEMU/OVMF dependencies and no supported package manager (pacman/apt-get) found." >&2
+        exit 1
+    fi
 fi
 
 # Locate OVMF UEFI firmware (prefer split CODE + VARS pflash pair, fallback to combined OVMF.fd)
@@ -57,6 +64,7 @@ for pair in \
     "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd" \
     "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd" \
     "/usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd" \
+    "/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.4m.fd" \
     "/usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd"; do
     code_cand="${pair%%:*}"
     vars_cand="${pair##*:}"

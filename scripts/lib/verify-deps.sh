@@ -115,6 +115,10 @@ verify_host_deps() {
         missing+=("ovmf")
     fi
 
+    if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; then
+        missing+=("qemu-ui-gtk")
+    fi
+
     if [[ "${#missing[@]}" -eq 0 ]]; then
         echo "[OK]   All host dependencies satisfied for mode '${mode}'."
         return 0
@@ -155,6 +159,18 @@ verify_host_deps() {
                     pkgs+=("$pkg")
                 fi
             done
+            if [[ "$mode" == "qemu" ]]; then
+                found="false"
+                for existing_pkg in "${pkgs[@]+"${pkgs[@]}"}"; do
+                    if [[ "$existing_pkg" == "qemu-ui-gtk" ]]; then
+                        found="true"
+                        break
+                    fi
+                done
+                if [[ "$found" == "false" ]]; then
+                    pkgs+=("qemu-ui-gtk")
+                fi
+            fi
             pacman -Sy --noconfirm --needed "${pkgs[@]}"
         else
             echo "[FATAL] Missing dependencies (${missing[*]}) and no supported package manager (apt-get/pacman) found." >&2
@@ -170,6 +186,9 @@ verify_host_deps() {
         done
         if [[ "$require_ovmf" == "true" ]] && ! _check_ovmf_firmware; then
             still_missing+=("ovmf")
+        fi
+        if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; then
+            still_missing+=("qemu-ui-gtk")
         fi
 
         if [[ "${#still_missing[@]}" -gt 0 ]]; then
