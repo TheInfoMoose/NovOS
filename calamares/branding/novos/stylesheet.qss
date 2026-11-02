@@ -1,0 +1,207 @@
+/* ============================================================================
+ * NovOS Calamares High-Contrast Nova Dark Qt Stylesheet (2026.10 "Nova")
+ * ============================================================================ */
+
+QWidget,
+QDialog,
+QFrame,
+#mainApp,
+#view-container {
+    background-color: #0F121C;
+    color: #F4F6FB;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+}
+
+/* Labels, Checkboxes, Radio Buttons & Group Boxes */
+QLabel,
+QCheckBox,
+QRadioButton,
+QGroupBox,
+QGroupBox::title {
+    background-color: transparent;
+    color: #F4F6FB;
+}
+
+QGroupBox {
+    border: 1px solid #2D354D;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+    font-weight: bold;
+    color: #FF6B1A;
+}
+
+/* Sidebar Navigation */
+#sidebarApp,
+#sidebarMenuApp {
+    background-color: #0B0C10;
+    color: #EBDBB2;
+}
+
+/* Inputs, Dropdowns, SpinBoxes, Text Areas & Tree/List/Table Views */
+QLineEdit,
+QComboBox,
+QComboBox QAbstractItemView,
+QSpinBox,
+QTextEdit,
+QPlainTextEdit,
+QTreeView,
+QListView,
+QTableView,
+QAbstractScrollArea {
+    background-color: #161B29;
+    color: #F4F6FB;
+    border: 1px solid #2D354D;
+    border-radius: 4px;
+    padding: 5px 8px;
+    selection-background-color: #FF6B1A;
+    selection-color: #0B0C10;
+    alternate-background-color: #121724;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QComboBox:hover,
+QSpinBox:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus,
+QTreeView:focus,
+QListView:focus {
+    border: 1px solid #FF6B1A;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #2D354D;
+    background-color: #1C2233;
+}
+
+QHeaderView::section {
+    background-color: #161B29;
+    color: #F4F6FB;
+    border: 1px solid #2D354D;
+    padding: 6px;
+    font-weight: bold;
+}
+
+QTreeView::item,
+QListView::item,
+QTableView::item {
+    color: #F4F6FB;
+    padding: 4px;
+}
+
+QTreeView::item:selected,
+QListView::item:selected,
+QTableView::item:selected {
+    background-color: #FF6B1A;
+    color: #0B0C10;
+}
+
+/* Checkboxes & Radio Indicators */
+QCheckBox::indicator,
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    background-color: #161B29;
+    border: 1px solid #2D354D;
+}
+
+QCheckBox::indicator {
+    border-radius: 3px;
+}
+
+QRadioButton::indicator {
+    border-radius: 8px;
+}
+
+QCheckBox::indicator:checked,
+QRadioButton::indicator:checked {
+    background-color: #FF6B1A;
+    border: 1px solid #FF9E44;
+}
+
+/* Action & Navigation Buttons */
+QPushButton,
+QToolButton {
+    background-color: #1C2233;
+    color: #F4F6FB;
+    border: 1px solid #FF6B1A;
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-weight: bold;
+}
+
+QPushButton:hover,
+QToolButton:hover {
+    background-color: #FF6B1A;
+    color: #0B0C10;
+    border: 1px solid #FF9E44;
+}
+
+QPushButton:pressed,
+QToolButton:pressed {
+    background-color: #E0550A;
+    color: #0B0C10;
+}
+
+QPushButton:disabled,
+QToolButton:disabled {
+    background-color: #121520;
+    color: #6E768A;
+    border: 1px solid #23293B;
+}
+
+/* Progress Bar */
+QProgressBar {
+    background-color: #161B29;
+    color: #F4F6FB;
+    border: 1px solid #2D354D;
+    border-radius: 4px;
+    text-align: center;
+    font-weight: bold;
+}
+
+QProgressBar::chunk {
+    background-color: #FF6B1A;
+    border-radius: 3px;
+}
+
+/* Scrollbars */
+QScrollBar:vertical,
+QScrollBar:horizontal {
+    background-color: #0F121C;
+    border: 1px solid #2D354D;
+    width: 10px;
+    height: 10px;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background-color: #2D354D;
+    border-radius: 4px;
+    min-height: 20px;
+    min-width: 20px;
+}
+
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {
+    background-color: #FF6B1A;
+}
+
+/* Tooltips */
+QToolTip {
+    background-color: #161B29;
+    color: #F4F6FB;
+    border: 1px solid #FF6B1A;
+    padding: 4px;
+}

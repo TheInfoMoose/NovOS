@@ -1,0 +1,35 @@
+# ==============================================================================
+# NovOS Calamares Branding Descriptor (2026.10 "Nova")
+# ==============================================================================
+---
+componentName: novos
+welcomeStyleCalamares: true
+welcomeExpandingLogo: true
+windowExpanding: normal
+windowSize: 800px,520px
+windowPlacement: center
+
+strings:
+    productName:         "NovOS"
+    shortProductName:    "NovOS"
+    version:             "2026.10 (Nova)"
+    shortVersion:        "2026.10"
+    versionedName:       "NovOS 2026.10 (Nova)"
+    shortVersionedName:  "NovOS 2026.10"
+    bootloaderEntryName: "NovOS"
+
+images:
+    productLogo:         "novos-logo.png"
+    productIcon:         "novos-logo.png"
+
+slideshow:               "show.qml"
+
+style:
+    sidebarBackground:        "#0B0C10"
+    sidebarText:              "#F4F6FB"
+    sidebarTextSelect:        "#FF6B1A"
+    sidebarTextHighlight:     "#161B29"
+    SidebarBackground:        "#0B0C10"
+    SidebarText:              "#F4F6FB"
+    SidebarTextCurrent:       "#FF6B1A"
+    SidebarBackgroundCurrent: "#161B29"

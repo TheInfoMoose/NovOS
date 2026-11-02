@@ -1,0 +1,38 @@
+# Byte-compiled / runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Disk images and build artifacts
+build/
+*.iso
+*.img
+*.qcow2
+*.raw
+*.vmdk
+
+# Development environment and agent IDE settings
+.agents/
+.gemini/
+.vscode/
+.idea/
+.env.local
+.venv/
+venv/
+ENV/
+env/
+
+# Editor swap and temporary files
+*.swp
+*.swo
+*~
+*.bak
+.DS_Store
+
+# Logs and diagnostic test output
+logs/
+*.log
+*.logs.txt
+
+# Local and agent Markdown files
+*.md

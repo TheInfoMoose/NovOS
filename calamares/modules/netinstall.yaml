@@ -1,0 +1,214 @@
+# ==============================================================================
+# NovOS Calamares Modular Profile & Granular Package Selection (netinstall.yaml)
+# Maps top-level profiles to /usr/local/bin/novos-setup and provides expandable
+# subgroups for individual package customization during installation.
+# ==============================================================================
+---
+- name: "Gaming Suite (XanMod + RDNA4 Optimized)"
+  description: "Steam, Lutris, Heroic, ProtonPlus, Protontricks, Bottles, Gamescope, GameMode, and MangoHud."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Core Gaming Runtime & Overlays"
+      description: "GameMode, Gamescope micro-compositor, MangoHud, GOverlay, and Vulkan tools."
+      selected: true
+      packages:
+        - gamemode
+        - gamescope
+        - mangohud
+        - goverlay
+        - vulkan-tools
+    - name: "Lutris & Wine Compatibility Layer"
+      description: "Lutris game manager, Wine, and Winetricks helper scripts."
+      selected: true
+      packages:
+        - lutris
+        - wine
+        - winetricks
+    - name: "Flathub Gaming Launchers (via novos-setup)"
+      description: "Provisions Steam, Heroic Games Launcher, ProtonPlus, Protontricks, and Bottles via Flatpak."
+      selected: true
+      packages:
+        - flatpak
+
+- name: "Development, Antigravity & Packaging Toolchain"
+  description: "Google Antigravity (IDE, 2.0 App, agy CLI), VS Code, Docker Engine, Rust (rustup), Python (uv), Haskell (GHC/Cabal/Stack), LLVM/Clang, Packaging Tools, and GPU Terminals."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Google Antigravity IDE & CLI"
+      description: "Google Antigravity IDE, Antigravity 2.0 application, and agy CLI agentic toolchain (via novos-setup)."
+      selected: true
+      packages:
+        - antigravity
+    - name: "Visual Studio Code"
+      description: "Microsoft Visual Studio Code editor from official upstream repository."
+      selected: true
+      packages:
+        - code
+    - name: "Docker Engine & Compose"
+      description: "Docker CE, CLI, containerd.io, Buildx, and Compose v2 plugin."
+      selected: true
+      packages:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - docker-buildx-plugin
+        - docker-compose-plugin
+    - name: "LLVM, Clang & C/C++ Build Toolchain"
+      description: "Clang, LLD linker, LLVM toolchain, CMake, and Ninja build system."
+      selected: true
+      packages:
+        - clang
+        - lld
+        - llvm
+        - cmake
+        - ninja-build
+    - name: "Python Development Toolchain"
+      description: "Full Python 3 runtime, development headers, pip, and venv (supplemented by Astral uv)."
+      selected: true
+      packages:
+        - python3-full
+        - python3-dev
+        - python3-pip
+        - python3-venv
+    - name: "Haskell Toolchain (GHC / Cabal / Stack)"
+      description: "Glasgow Haskell Compiler, Cabal build tool, and Haskell Stack."
+      selected: true
+      packages:
+        - ghc
+        - cabal-install
+        - haskell-stack
+    - name: "AppImage, RPM & DEB Packaging Tools"
+      description: "Alien package converter, rpm2cpio, cpio, patchelf, squashfs-tools, desktop-file-utils, and zsync."
+      selected: true
+      packages:
+        - alien
+        - rpm2cpio
+        - cpio
+        - patchelf
+        - squashfs-tools
+        - desktop-file-utils
+        - zsync
+    - name: "TTY & GPU-Accelerated Terminals (Ghostty & Alacritty)"
+      description: "Alacritty and Ghostty (provisioned via novos-setup) GPU-accelerated terminal emulators."
+      selected: true
+      packages:
+        - alacritty
+
+- name: "Local AI, Hosted LLM & ComfyUI Stack (/srv/llm)"
+  description: "Ollama & llama.cpp (ROCm/Vulkan RDNA4 accelerated), Containerized ComfyUI & Open WebUI bound to @llm, Hugging Face CLI (hf), nvtop, and amdgpu_top."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "GPU & System Monitors"
+      description: "nvtop, radeontop, btop, and ROCm System Management Interface (rocm-smi)."
+      selected: true
+      packages:
+        - nvtop
+        - radeontop
+        - btop
+        - rocm-smi
+    - name: "Vulkan & Compute Build Dependencies"
+      description: "Vulkan development headers, GLSL/SPIR-V shader compilers (glslang-tools, spirv-tools), and libcurl OpenSSL headers for llama.cpp."
+      selected: true
+      packages:
+        - libcurl4-openssl-dev
+        - libvulkan-dev
+        - glslang-tools
+        - spirv-tools
+
+- name: "Workstation Network, Remote & NAS (DevShare)"
+  description: "Samba [DevShare] at /srv/devshare, Remmina (RDP/VNC), Tailscale, WireGuard, and OpenSSH Server."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Samba DevShare NAS (/srv/devshare)"
+      description: "Samba server, SMB client utilities, and CIFS filesystem support."
+      selected: true
+      packages:
+        - samba
+        - smbclient
+        - cifs-utils
+    - name: "Remmina Remote Desktop Client"
+      description: "Remmina remote desktop client with RDP and VNC protocol plugins."
+      selected: true
+      packages:
+        - remmina
+        - remmina-plugin-rdp
+        - remmina-plugin-vnc
+    - name: "VPN & SSH Server"
+      description: "WireGuard VPN tools and OpenSSH Server daemon."
+      selected: true
+      packages:
+        - wireguard-tools
+        - openssh-server
+
+- name: "Web Browsers & Internet"
+  description: "Optional web browsers including Firefox ESR and Chromium."
+  selected: false
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Firefox ESR"
+      description: "Mozilla Firefox Extended Support Release web browser."
+      selected: false
+      packages:
+        - firefox-esr
+    - name: "Chromium"
+      description: "Open-source Chromium web browser."
+      selected: false
+      packages:
+        - chromium
+
+- name: "Media, Graphics & Creative Suite"
+  description: "Optional media playback, live streaming, video editing, 2D design, and 3D creation applications."
+  selected: false
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Media Players"
+      description: "VLC media player and mpv command-line/minimalist video player."
+      selected: false
+      packages:
+        - vlc
+        - mpv
+    - name: "Streaming & Video Editing"
+      description: "OBS Studio for recording/streaming and Kdenlive non-linear video editor."
+      selected: false
+      packages:
+        - obs-studio
+        - kdenlive
+    - name: "Design & 3D Creation"
+      description: "GIMP image editor, Inkscape vector graphics editor, and Blender 3D creation suite."
+      selected: false
+      packages:
+        - gimp
+        - inkscape
+        - blender
+
+- name: "System Utilities & Office Productivity"
+  description: "Optional office productivity suite and power CLI/GUI workstation utilities."
+  selected: false
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "LibreOffice Suite"
+      description: "Full LibreOffice productivity suite (Writer, Calc, Impress, Draw)."
+      selected: false
+      packages:
+        - libreoffice
+    - name: "Power CLI & GUI Utilities"
+      description: "Fastfetch, GParted partition editor, KeePassXC password manager, tmux, ripgrep, and fd-find."
+      selected: false
+      packages:
+        - fastfetch
+        - gparted
+        - keepassxc
+        - tmux
+        - ripgrep
+        - fd-find
