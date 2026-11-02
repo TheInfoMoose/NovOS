@@ -190,7 +190,7 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # Resolve target user; prefer explicit --user or SUDO_USER if valid, else latest regular user (UID 1000-59999)
-if [[ -z "$TARGET_USER" ]] || ! id "$TARGET_USER" >/dev/null 2>&1; then
+if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]] || ! id "$TARGET_USER" >/dev/null 2>&1; then
     DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {u=$1} END {print u}' /etc/passwd || true)"
     if [[ -n "$DETECTED_USER" ]]; then
         TARGET_USER="$DETECTED_USER"
@@ -662,6 +662,14 @@ install_utilities_profile() {
 
 run_post_calamares() {
     echo "==> [Post-Calamares] Detecting netinstall marker packages for user '${TARGET_USER}'..."
+    if [[ -n "$TARGET_USER" && "$TARGET_USER" != "devuser" ]] && id -u "$TARGET_USER" >/dev/null 2>&1; then
+        userdel -r -f devuser 2>/dev/null || deluser --remove-home devuser 2>/dev/null || true
+        groupdel devuser 2>/dev/null || true
+        rm -rf /home/devuser /var/spool/mail/devuser /var/lib/AccountsService/users/devuser /var/lib/AccountsService/icons/devuser
+    fi
+    if id -u "$TARGET_USER" >/dev/null 2>&1; then
+        chown -R "${TARGET_USER}:${TARGET_USER}" /srv/llm /srv/devshare 2>/dev/null || true
+    fi
     if any_pkg_installed steam-installer lutris mangohud vkbasalt goverlay gamescope wine winetricks retroarch dolphin-emu ppsspp; then
         configure_gaming_flathub
         verify_profile_deps gaming

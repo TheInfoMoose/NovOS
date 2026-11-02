@@ -151,22 +151,34 @@ chmod 0755 /var/lib/cosmic-greeter /var/cache/tuigreet
 # 1. Missing Debian PAM profiles for cosmic-greeter and greetd
 cat << 'EOF' > /etc/pam.d/cosmic-greeter
 #%PAM-1.0
+auth       requisite    pam_nologin.so
+auth       required     pam_succeed_if.so user != root quiet_success
 auth       substack     common-auth
 -auth      optional     pam_gnome_keyring.so
 account    include      common-account
 password   substack     common-password
 session    required     pam_loginuid.so
+session    optional     pam_keyinit.so force revoke
+session    required     pam_limits.so
+session    required     pam_env.so readenv=1
+session    required     pam_env.so readenv=1 user_readenv=1 envfile=/etc/default/locale
 session    include      common-session
 -session   optional     pam_gnome_keyring.so auto_start
 EOF
 
 cat << 'EOF' > /etc/pam.d/greetd
 #%PAM-1.0
+auth       requisite    pam_nologin.so
+auth       required     pam_succeed_if.so user != root quiet_success
 auth       substack     common-auth
 -auth      optional     pam_gnome_keyring.so
 account    include      common-account
 password   substack     common-password
 session    required     pam_loginuid.so
+session    optional     pam_keyinit.so force revoke
+session    required     pam_limits.so
+session    required     pam_env.so readenv=1
+session    required     pam_env.so readenv=1 user_readenv=1 envfile=/etc/default/locale
 session    include      common-session
 -session   optional     pam_gnome_keyring.so auto_start
 EOF
@@ -220,24 +232,8 @@ fi
 cat << 'EOF' > /usr/local/bin/cosmic-greeter-app
 #!/usr/bin/env bash
 export COSMIC_DATA_CONTROL_ENABLED=1
-BG_PID=""
-if [ -x /usr/bin/cosmic-bg ]; then
-    /usr/bin/cosmic-bg &
-    BG_PID=$!
-fi
-RC=0
-/usr/bin/cosmic-greeter "$@" || RC=$?
-if [ -n "$BG_PID" ]; then
-    kill "$BG_PID" 2>/dev/null || true
-fi
-if [ "$RC" -eq 0 ]; then
-    if [ -n "${PPID:-}" ] && [ "$PPID" -gt 1 ] && kill -0 "$PPID" 2>/dev/null; then
-        kill -TERM "$PPID" 2>/dev/null || true
-    fi
-    exit 0
-else
-    exit "$RC"
-fi
+rm -rf "/run/user/$(id -u)/cosmic/com.system76.CosmicSettingsDaemon/v1/"* 2>/dev/null || true
+exec /usr/bin/cosmic-greeter "$@"
 EOF
 chmod 0755 /usr/local/bin/cosmic-greeter-app
 
@@ -268,14 +264,22 @@ else
 fi
 
 if ls /dev/dri/card* >/dev/null 2>&1 && [ -x /usr/bin/cosmic-comp ] && [ -x /usr/local/bin/cosmic-greeter-app ]; then
-    if dbus-run-session -- /usr/bin/cosmic-comp /usr/local/bin/cosmic-greeter-app; then
+    start_ts=$SECONDS
+    rc=0
+    dbus-run-session -- /usr/bin/cosmic-comp /usr/local/bin/cosmic-greeter-app || rc=$?
+    elapsed=$((SECONDS - start_ts))
+    if [ "$rc" -eq 0 ] || [ "$elapsed" -ge 5 ]; then
         exit 0
     fi
-    echo "[cosmic-greeter-launch] Hardware EGL cosmic-greeter exited non-zero; retrying with LIBGL_ALWAYS_SOFTWARE=1..." >&2
-    if LIBGL_ALWAYS_SOFTWARE=1 ICED_BACKEND=tiny-skia WGPU_BACKEND=gl dbus-run-session -- /usr/bin/cosmic-comp /usr/local/bin/cosmic-greeter-app; then
+    echo "[cosmic-greeter-launch] Hardware EGL cosmic-greeter failed on startup (rc=${rc}, elapsed=${elapsed}s); retrying with LIBGL_ALWAYS_SOFTWARE=1..." >&2
+    start_ts=$SECONDS
+    rc=0
+    LIBGL_ALWAYS_SOFTWARE=1 ICED_BACKEND=tiny-skia WGPU_BACKEND=gl dbus-run-session -- /usr/bin/cosmic-comp /usr/local/bin/cosmic-greeter-app || rc=$?
+    elapsed=$((SECONDS - start_ts))
+    if [ "$rc" -eq 0 ] || [ "$elapsed" -ge 5 ]; then
         exit 0
     fi
-    echo "[cosmic-greeter-launch] Graphical cosmic-greeter exited non-zero; falling back to tuigreet..." >&2
+    echo "[cosmic-greeter-launch] Graphical cosmic-greeter failed on startup (rc=${rc}, elapsed=${elapsed}s); falling back to tuigreet..." >&2
 fi
 
 exec /usr/bin/tuigreet \
@@ -300,14 +304,15 @@ EOF
 mkdir -p /etc/systemd/system/greetd.service.d
 cat << 'EOF' > /etc/systemd/system/greetd.service.d/override.conf
 [Unit]
-After=systemd-user-sessions.service plymouth-quit-wait.service systemd-logind.service dbus.service getty@tty1.service
-Wants=systemd-logind.service dbus.service
+After=systemd-user-sessions.service plymouth-quit-wait.service systemd-logind.service dbus.service cosmic-greeter-daemon.service getty@tty1.service
+Wants=systemd-logind.service dbus.service cosmic-greeter-daemon.service
 
 [Service]
 TTYPath=/dev/tty7
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
+KeyringMode=shared
 StandardOutput=journal
 StandardError=journal
 EOF

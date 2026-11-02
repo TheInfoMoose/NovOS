@@ -697,6 +697,13 @@ verify_stage4_post() {
         echo "[OK]   [Stage 4 Gate] Verified user = \"cosmic-greeter\" in ${root}/etc/greetd/config.toml"
     fi
 
+    if [[ ! -f "${root}/usr/local/bin/cosmic-greeter-app" ]] || ! grep -q 'exec /usr/bin/cosmic-greeter' "${root}/usr/local/bin/cosmic-greeter-app" || grep -q 'kill -TERM' "${root}/usr/local/bin/cosmic-greeter-app"; then
+        echo "[FAIL] [Stage 4 Gate] ${root}/usr/local/bin/cosmic-greeter-app must contain 'exec /usr/bin/cosmic-greeter' and must not contain 'kill -TERM'" >&2
+        errors=$((errors + 1))
+    else
+        echo "[OK]   [Stage 4 Gate] Verified clean kiosk exit in ${root}/usr/local/bin/cosmic-greeter-app"
+    fi
+
     local seatd_masked="false"
     local unit_path
     for unit_path in "/etc/systemd/system/seatd.service" "/lib/systemd/system/seatd.service" "/usr/lib/systemd/system/seatd.service"; do
