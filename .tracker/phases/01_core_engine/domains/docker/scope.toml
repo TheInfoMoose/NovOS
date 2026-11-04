@@ -1,0 +1,15 @@
+[scope]
+id = "docker"
+target = "docker"
+tech_stack = []
+description = "Promoted from component 'docker' (docker)"
+bound_component = "docker"
+tracked_files = [
+    "docker/Dockerfile.builder",
+    "docker/Dockerfile.qemu-tester",
+    "docker/docker-compose.ci.yml",
+]
+
+[items]
+bugs = []
+features = []

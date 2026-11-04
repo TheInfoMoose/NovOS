@@ -1,0 +1,59 @@
+[phase]
+id = "01_core_engine"
+title = "Core Engine"
+status = "in_progress"
+start_date = "2026-11-04"
+
+[[scopes.manifest]]
+id = "inbox"
+type = "inbox"
+path = "domains/inbox"
+
+[[scopes.manifest]]
+id = "branding"
+type = "custom"
+path = "domains/branding"
+
+[[scopes.manifest]]
+id = "calamares"
+type = "python_pkg"
+path = "domains/calamares"
+
+[[scopes.manifest]]
+id = "config"
+type = "custom"
+path = "domains/config"
+
+[[scopes.manifest]]
+id = "custom_tools"
+type = "custom"
+path = "domains/custom_tools"
+
+[[scopes.manifest]]
+id = "docker"
+type = "custom"
+path = "domains/docker"
+
+[[scopes.manifest]]
+id = "docs"
+type = "custom"
+path = "domains/docs"
+
+[[scopes.manifest]]
+id = "novos_custom_tools"
+type = "rust_crate"
+path = "domains/novos_custom_tools"
+
+[[scopes.manifest]]
+id = "novos_slippery_tiles"
+type = "rust_crate"
+path = "domains/novos_slippery_tiles"
+
+[[scopes.manifest]]
+id = "scripts"
+type = "python_pkg"
+path = "domains/scripts"
+
+[summary]
+total_items = 0
+completed_items = 0

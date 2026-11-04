@@ -1,0 +1,14 @@
+[scope]
+id = "novos_custom_tools"
+target = "crates/novos-custom-tools"
+tech_stack = ["rust"]
+description = "Promoted from component 'novos-custom-tools' (crates/novos-custom-tools)"
+bound_component = "novos_custom_tools"
+tracked_files = [
+    "crates/novos-custom-tools/Cargo.toml",
+    "crates/novos-custom-tools/src/main.rs",
+]
+
+[items]
+bugs = []
+features = []

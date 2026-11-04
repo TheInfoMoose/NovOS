@@ -1,0 +1,11 @@
+[scope]
+id = "config"
+target = "config"
+tech_stack = []
+description = "Promoted from component 'config' (config)"
+bound_component = "config"
+tracked_files = ["config/build.env"]
+
+[items]
+bugs = []
+features = []

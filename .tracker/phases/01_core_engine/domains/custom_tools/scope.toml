@@ -1,0 +1,11 @@
+[scope]
+id = "custom_tools"
+target = "custom-tools"
+tech_stack = []
+description = "Promoted from component 'custom-tools' (custom-tools)"
+bound_component = "custom_tools"
+tracked_files = ["custom-tools/manifest.yaml"]
+
+[items]
+bugs = []
+features = []

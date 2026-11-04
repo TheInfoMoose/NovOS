@@ -1,0 +1,30 @@
+[scope]
+id = "scripts"
+target = "scripts"
+tech_stack = [
+    "shell",
+    "python",
+]
+description = "Promoted from component 'scripts' (scripts)"
+bound_component = "scripts"
+tracked_files = [
+    "scripts/build-live-iso.sh",
+    "scripts/build-novos.sh",
+    "scripts/generate-branding-assets.py",
+    "scripts/lib/verify-deps.sh",
+    "scripts/mcp_nebulous_ci.py",
+    "scripts/nebulous-ctl.py",
+    "scripts/stages/01-partition-mount.sh",
+    "scripts/stages/02-bootstrap-chroot.sh",
+    "scripts/stages/03-core-system.sh",
+    "scripts/stages/04-cosmic-desktop.sh",
+    "scripts/stages/05-profiles-installer.sh",
+    "scripts/stages/06-snapshot-finalize.sh",
+    "scripts/stages/07-live-iso.sh",
+    "scripts/test-docker-qemu.py",
+    "scripts/test-qemu.sh",
+]
+
+[items]
+bugs = []
+features = []

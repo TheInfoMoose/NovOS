@@ -1,0 +1,29 @@
+[scope]
+id = "branding"
+target = "branding"
+tech_stack = []
+description = "Promoted from component 'branding' (branding)"
+bound_component = "branding"
+tracked_files = [
+    "branding/nova-minimal-faceted-dark-16x9.png",
+    "branding/nova-minimal-faceted-dark-32x9.png",
+    "branding/nova-minimal-faceted-light-16x9.png",
+    "branding/nova-minimal-faceted-light-32x9.png",
+    "branding/nova-minimal-silhouette-dark-16x9.png",
+    "branding/nova-minimal-silhouette-dark-32x9.png",
+    "branding/nova-minimal-silhouette-light-16x9.png",
+    "branding/nova-minimal-silhouette-light-32x9.png",
+    "branding/nova-realistic-16x9.png",
+    "branding/nova-realistic-32x9.png",
+    "branding/nova-realistic-base.png",
+    "branding/nova-wallpaper.png",
+    "branding/nova-wallpaper.svg",
+    "branding/novos-logo.png",
+    "branding/novos-logo.svg",
+    "branding/themes/Dark.ron",
+    "branding/themes/Light.ron",
+]
+
+[items]
+bugs = []
+features = []

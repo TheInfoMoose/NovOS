@@ -1,0 +1,29 @@
+[scope]
+id = "calamares"
+target = "calamares"
+tech_stack = ["python"]
+description = "Promoted from component 'calamares' (calamares)"
+bound_component = "calamares"
+tracked_files = [
+    "calamares/branding/novos/branding.desc",
+    "calamares/branding/novos/stylesheet.qss",
+    "calamares/modules/fstab.conf",
+    "calamares/modules/limine-bootloader/main.py",
+    "calamares/modules/limine-bootloader/module.desc",
+    "calamares/modules/machineid.conf",
+    "calamares/modules/mount.conf",
+    "calamares/modules/netinstall.conf",
+    "calamares/modules/netinstall.yaml",
+    "calamares/modules/packages.conf",
+    "calamares/modules/partition.conf",
+    "calamares/modules/shellprocess-novos.conf",
+    "calamares/modules/shellprocess-prepackages.conf",
+    "calamares/modules/unpackfs.conf",
+    "calamares/modules/users.conf",
+    "calamares/modules/welcome.conf",
+    "calamares/settings.conf",
+]
+
+[items]
+bugs = []
+features = []
