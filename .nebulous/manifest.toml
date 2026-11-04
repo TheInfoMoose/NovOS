@@ -1,0 +1,79 @@
+# ==============================================================================
+# NovOS Locked System & Application Manifest (Forward-Only Guardrail Contract)
+# ==============================================================================
+
+schema_version = 1
+
+[os]
+required = true
+distro_id = "novos"
+distro_name = "NovOS"
+distro_version = "2026.10"
+distro_codename = "nova"
+debian_suite = "sid"
+esp_size_mib = 6144
+
+[kernels]
+required = true
+primary_vmlinuz = "/boot/efi/novos/vmlinuz-primary"
+fallback_vmlinuz = "/boot/efi/novos/vmlinuz-lts-fallback"
+bootloader_efi = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
+limine_conf = "/boot/efi/limine.conf"
+
+[packages.core]
+systemd-sysv = { required = true, min_version = "255" }
+dracut = { required = true, min_version = "060" }
+btrfs-progs = { required = true, min_version = "6.6" }
+snapper = { required = true, min_version = "0.10" }
+linux-image-amd64 = { required = true, min_version = "6.6" }
+mesa-vulkan-drivers = { required = true, min_version = "24.0" }
+libgl1-mesa-dri = { required = true, min_version = "24.0" }
+pipewire-audio = { required = true, min_version = "1.0" }
+wireplumber = { required = true, min_version = "0.4" }
+flatpak = { required = true, min_version = "1.14" }
+greetd = { required = true, min_version = "0.9" }
+tuigreet = { required = true, min_version = "0.8" }
+calamares = { required = true, min_version = "3.3" }
+live-boot = { required = true, min_version = "1:20230131" }
+
+[packages.cosmic]
+cosmic-comp = { required = true, min_version = "0.1.0" }
+cosmic-session = { required = true, min_version = "0.1.0" }
+cosmic-greeter = { required = true, min_version = "0.1.0" }
+cosmic-panel = { required = true, min_version = "0.1.0" }
+cosmic-applets = { required = true, min_version = "0.1.0" }
+cosmic-files = { required = true, min_version = "0.1.0" }
+cosmic-term = { required = true, min_version = "0.1.0" }
+cosmic-settings = { required = true, min_version = "0.1.0" }
+
+[custom_binaries]
+"/usr/local/bin/novos-slippery-tiles" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/novos-gtile-overlay" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/novos-custom-tools" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/novos-setup" = { required = true, min_version = "0.1.0", required_flags = ["--pre-packages"] }
+"/usr/local/bin/novos-llm-stack" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/novos-sec-box" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/novos-wallpaper-auto" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/cosmic-greeter-launch" = { required = true, min_version = "0.1.0" }
+"/usr/local/bin/cosmic-session-launch" = { required = true, min_version = "0.1.0" }
+"/usr/local/sbin/update-limine-snapshots" = { required = true, min_version = "0.1.0" }
+
+[calamares_modules]
+required = true
+required_configs = [
+    "mount.conf",
+    "machineid.conf",
+    "unpackfs.conf",
+    "fstab.conf",
+    "users.conf",
+    "welcome.conf",
+    "netinstall.conf",
+    "netinstall.yaml",
+    "packages.conf",
+    "partition.conf",
+    "shellprocess-prepackages.conf",
+    "shellprocess-novos.conf",
+]
+custom_modules = [
+    "limine-bootloader",
+]

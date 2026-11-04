@@ -1122,6 +1122,19 @@ run_self_test() {
     done
 
     echo "==> [Self-Test] Validating Python syntax (py_compile) across scripts/ and calamares/..."
+    local required_py_scripts=(
+        "${VERIFY_REPO_ROOT}/scripts/nebulous-ctl.py"
+        "${VERIFY_REPO_ROOT}/scripts/test-docker-qemu.py"
+        "${VERIFY_REPO_ROOT}/scripts/mcp_nebulous_ci.py"
+    )
+    local req_py
+    for req_py in "${required_py_scripts[@]}"; do
+        if [[ ! -f "$req_py" ]]; then
+            echo "[FAIL] [Self-Test] Missing required Python script: ${req_py#"${VERIFY_REPO_ROOT}/"}" >&2
+            return 1
+        fi
+    done
+
     local py_files=()
     while IFS= read -r -d '' pyf; do
         py_files+=("$pyf")
@@ -1134,12 +1147,16 @@ run_self_test() {
     done
     rm -rf "$pycache_tmp" 2>/dev/null || true
 
-    echo "==> [Self-Test] Validating YAML syntax (yaml.safe_load) across calamares/ and custom-tools/..."
+    echo "==> [Self-Test] Validating YAML syntax (yaml.safe_load) across calamares/, custom-tools/, and docker/..."
+    if [[ ! -f "${VERIFY_REPO_ROOT}/docker/docker-compose.ci.yml" ]]; then
+        echo "[FAIL] [Self-Test] Missing required Docker Compose file: docker/docker-compose.ci.yml" >&2
+        return 1
+    fi
     if [[ -d "${VERIFY_REPO_ROOT}/calamares" ]]; then
         local yaml_files=()
         while IFS= read -r -d '' yf; do
             yaml_files+=("$yf")
-        done < <(find "${VERIFY_REPO_ROOT}/calamares" "${VERIFY_REPO_ROOT}/custom-tools" -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.conf" \) -print0 2>/dev/null)
+        done < <(find "${VERIFY_REPO_ROOT}/calamares" "${VERIFY_REPO_ROOT}/custom-tools" "${VERIFY_REPO_ROOT}/docker" -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.conf" \) -print0 2>/dev/null)
 
         for yf in "${yaml_files[@]}"; do
             python3 -c '
@@ -1291,6 +1308,43 @@ for required_tok in (
         return 1
     fi
     echo "[OK]   Host-safety invariants verified (no 'fuser -km', no 'mount --bind /run', safe chroot process guard, prefix submount detection)."
+
+    echo "==> [Self-Test] Validating Nebulous TOML schema (tomllib.load) across .nebulous/..."
+    local toml_files=(
+        "${VERIFY_REPO_ROOT}/.nebulous/project.toml"
+        "${VERIFY_REPO_ROOT}/.nebulous/manifest.toml"
+        "${VERIFY_REPO_ROOT}/.nebulous/golden-snapshot.toml"
+    )
+    local tf
+    for tf in "${VERIFY_REPO_ROOT}"/.nebulous/phases/*.toml "${VERIFY_REPO_ROOT}"/.nebulous/items/*.toml; do
+        if [[ -f "$tf" ]]; then
+            toml_files+=("$tf")
+        fi
+    done
+    for tf in "${toml_files[@]}"; do
+        if [[ ! -f "$tf" ]]; then
+            echo "[FAIL] [Self-Test] Missing required Nebulous TOML file: ${tf#"${VERIFY_REPO_ROOT}/"}" >&2
+            return 1
+        fi
+        python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    data = tomllib.load(fh)
+if not isinstance(data, dict) or not data:
+    raise SystemExit(f"Empty or invalid TOML root table in {sys.argv[1]}")
+' "$tf"
+        echo "[OK]   tomllib.load: ${tf#"${VERIFY_REPO_ROOT}/"}"
+    done
+
+    echo "==> [Self-Test] Running Nebulous & Docker/QEMU CI self-tests and repo variance check..."
+    "${VERIFY_REPO_ROOT}/scripts/nebulous-ctl.py" --self-test
+    echo "[OK]   nebulous-ctl.py --self-test"
+    "${VERIFY_REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --repo-only
+    echo "[OK]   nebulous-ctl.py verify-variance --repo-only"
+    "${VERIFY_REPO_ROOT}/scripts/test-docker-qemu.py" --self-test
+    echo "[OK]   test-docker-qemu.py --self-test"
+    "${VERIFY_REPO_ROOT}/scripts/mcp_nebulous_ci.py" --self-test
+    echo "[OK]   mcp_nebulous_ci.py --self-test"
 
     echo "==> [Self-Test] All syntax and schema checks passed."
 }

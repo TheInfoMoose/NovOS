@@ -1,0 +1,24 @@
+services:
+  novos-builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.builder
+    privileged: true
+    volumes:
+      - ..:/workspace
+      - ../build/cache/apt:/cache/apt
+      - ../build/cache/cargo:/cache/cargo
+    working_dir: /workspace
+
+  novos-qemu-tester:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.qemu-tester
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    ports:
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:5900:5900"
+    volumes:
+      - "..:/workspace"
+    working_dir: /workspace

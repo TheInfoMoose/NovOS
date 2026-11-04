@@ -1,0 +1,15 @@
+# ==============================================================================
+# Nebulous Tiered Work Item: item-001-docker-qemu-ci
+# ==============================================================================
+
+attempts = []
+
+[item]
+id = "item-001-docker-qemu-ci"
+phase_id = "phase-01-ci-foundation"
+title = "Dockerized Build & QEMU Two-Tier Verification Workflow"
+status = "in_progress"
+loop_locked = false
+retry_count = 0
+negative_constraints = []
+attempts = []

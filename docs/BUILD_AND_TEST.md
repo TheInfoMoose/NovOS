@@ -140,4 +140,107 @@ bash -n scripts/build-novos.sh scripts/test-qemu.sh scripts/lib/verify-deps.sh s
 # 2. Verify Python syntax and run the Calamares Limine module unit self-test:
 python3 -m py_compile scripts/generate-branding-assets.py calamares/modules/limine-bootloader/main.py
 python3 calamares/modules/limine-bootloader/main.py --self-test
+
+# 3. Run the unified verification & Nebulous self-test gate suite:
+./scripts/lib/verify-deps.sh --self-test
 ```
+
+---
+
+## 7. Dockerized Clean-Room Build & Dual-Mode QEMU/KVM Verification
+
+[`docker/docker-compose.ci.yml`](../docker/docker-compose.ci.yml) defines two isolated container services so full Stage 1–6 ISO builds and UEFI QEMU/KVM tests run reproducibly without mutating the host operating system:
+
+| Service | Dockerfile | Key Mounts / Devices / Ports | Purpose |
+| :--- | :--- | :--- | :--- |
+| **`novos-builder`** | [`docker/Dockerfile.builder`](../docker/Dockerfile.builder) | `privileged: true`, `..:/workspace`, `../build/cache/apt:/cache/apt`, `../build/cache/cargo:/cache/cargo` | Runs fresh Stage 1–6 `build-novos.sh` clean-room ISO builds with persistent APT & Cargo caches. |
+| **`novos-qemu-tester`** | [`docker/Dockerfile.qemu-tester`](../docker/Dockerfile.qemu-tester) | `/dev/kvm:/dev/kvm`, `127.0.0.1:5900:5900` (VNC), `127.0.0.1:6080:6080` (noVNC), `..:/workspace` | Runs [`scripts/test-docker-qemu.py`](../scripts/test-docker-qemu.py) against `./build/NovOS-sid-amd64.iso` with UEFI OVMF firmware, QMP socket telemetry, and optional VNC/noVNC visual inspection. |
+
+### Containerized Build & Verification Commands
+
+```bash
+# 1. Run a fresh Stage 1-6 clean-room ISO build inside the builder container:
+docker compose -f docker/docker-compose.ci.yml run --rm novos-builder \
+  ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso
+
+# 2. Tier 1 (live-boot): Headless UEFI OVMF boot + QMP screendump + live guest self-tests:
+docker compose -f docker/docker-compose.ci.yml run --rm novos-qemu-tester \
+  ./scripts/test-docker-qemu.py --iso ./build/NovOS-sid-amd64.iso --tier live-boot --no-vnc
+
+# 3. Tier 1 with interactive VNC (127.0.0.1:5900) and browser noVNC (http://127.0.0.1:6080):
+docker compose -f docker/docker-compose.ci.yml run --rm --service-ports novos-qemu-tester \
+  ./scripts/test-docker-qemu.py --iso ./build/NovOS-sid-amd64.iso --tier live-boot --vnc
+
+# 4. Tier 2 (install-e2e): Full installation to 64 GiB VirtIO target disk + installed reboot check:
+docker compose -f docker/docker-compose.ci.yml run --rm novos-qemu-tester \
+  ./scripts/test-docker-qemu.py --iso ./build/NovOS-sid-amd64.iso --tier install-e2e --no-vnc
+```
+
+### CLI Reference: `scripts/test-docker-qemu.py`
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--iso <path>` | `./build/NovOS-sid-amd64.iso` | Path to the built Hybrid Live ISO to verify |
+| `--tier <live-boot\|install-e2e>` | `live-boot` | Verification tier (`live-boot` 420s timeout; `install-e2e` 1200s timeout) |
+| `--vnc` / `--no-vnc` | `--no-vnc` | Enable VNC (`:5900`) + noVNC (`:6080`) or run headless (`-display none`) with QMP `screendump` |
+| `--item <path>` | `.nebulous/items/item-001-docker-qemu-ci.toml` | Tiered `Item.toml` state file updated with attempt telemetry |
+| `--ram <MiB>` | `8192` | Guest memory allocation in MiB |
+| `--cpus <N>` | `4` | Guest vCPU count |
+| `--disk <path>` | `./build/novos-calamares-target.img` | Target VirtIO disk image (`64 GiB` `qcow2`) |
+| `--dry-run` | `false` | Print constructed QEMU command, QMP socket path, and milestone plan without booting |
+| `--self-test` | `false` | Run built-in unit tests for QMP commands, PPM/PNG analysis, OVMF discovery, and Nebulous telemetry |
+
+---
+
+## 8. Nebulous Tiered TOML, Golden OS Snapshot Variance Lock & CI/CD MCP Guardrails
+
+NovOS enforces deterministic state tracking and anti-regression guardrails through the `.nebulous/` hierarchy, [`scripts/nebulous-ctl.py`](../scripts/nebulous-ctl.py), and the stdio MCP server [`scripts/mcp_nebulous_ci.py`](../scripts/mcp_nebulous_ci.py).
+
+### 8.1 Tiered `.nebulous/` TOML Hierarchy
+
+| File / Pattern | Role |
+| :--- | :--- |
+| [`.nebulous/project.toml`](../.nebulous/project.toml) | Global project invariants, target ISO path, and active phase references |
+| [`.nebulous/manifest.toml`](../.nebulous/manifest.toml) | Authoritative manifest of required packages, Rust workspace crates, custom binaries, Calamares configs, and kernel/boot artifacts |
+| [`.nebulous/golden-snapshot.toml`](../.nebulous/golden-snapshot.toml) | Baseline Golden OS Snapshot recording minimum package versions, binary paths, and SquashFS/ISO structural expectations |
+| [`.nebulous/phases/*.toml`](../.nebulous/phases/phase-01-ci-foundation.toml) | Phase-level objectives, entry/exit criteria, and child work item IDs |
+| [`.nebulous/items/*.toml`](../.nebulous/items/item-001-docker-qemu-ci.toml) | Per-item execution state (`retry_count`, `loop_locked`, `negative_constraints`, and structured `[[attempts]]` log) |
+
+### 8.2 Asymmetric Forward-Only Variance Lock & Loop Breaker (`scripts/nebulous-ctl.py`)
+
+[`scripts/nebulous-ctl.py`](../scripts/nebulous-ctl.py) enforces two non-bypassable guardrails:
+
+1. **Asymmetric Forward-Only Variance Lock (`verify-variance`):**
+   - **Allowed (`PASS`):** Package version upgrades (`candidate >= golden` using Debian Policy §5.6.12 comparison) and newly added packages/binaries.
+   - **Blocked (`EXIT_VARIANCE_LOCK = 2`):** Any dropped package, missing required binary/config/module, or version downgrade (`candidate < golden`) unless explicitly listed in `.nebulous/approvals.toml` by the host user.
+2. **Automated Loop Breaker (`record-attempt` / `check-guardrail`):**
+   - Computes normalized error and git diff fingerprints across failed build/test attempts.
+   - Injects structured `negative_constraints` into the active `Item.toml` when an error or failed diff repeats, and sets `loop_locked = true` (`EXIT_LOOP_LOCK = 3`) once the retry threshold (`3`) is reached.
+
+```bash
+# Run unit self-tests for Debian version comparison, symlink resolution, variance lock, and loop breaker:
+./scripts/nebulous-ctl.py --self-test
+
+# Verify repository manifest invariants (no ISO required):
+./scripts/nebulous-ctl.py verify-variance --repo-only
+
+# Verify both repository invariants and a built Live ISO against the Golden OS Snapshot:
+./scripts/nebulous-ctl.py verify-variance --iso ./build/NovOS-sid-amd64.iso
+
+# Check guardrail status (loop lock, retry count, negative constraints, variance state):
+./scripts/nebulous-ctl.py check-guardrail --item .nebulous/items/item-001-docker-qemu-ci.toml --json
+```
+
+> [!CAUTION]
+> **Host-Only User Approval Commands (`bless-golden`, `approve-variance`, `unlock-loop`):**
+> These subcommands require `--user-confirmed-token` and reject execution when `ANTIGRAVITY_AGENT=1` (`EXIT_PERMISSION_DENIED = 4`). Agents must never invoke them or modify `.nebulous/golden-snapshot.toml` / `.nebulous/approvals.toml` directly.
+
+### 8.3 Stdio MCP Server (`scripts/mcp_nebulous_ci.py`)
+
+[`scripts/mcp_nebulous_ci.py`](../scripts/mcp_nebulous_ci.py) exposes 5 typed JSON-RPC 2.0 MCP tools over stdio (configured in [`.agents/mcp.json`](../.agents/mcp.json)):
+
+- `nebulous_get_status`: Returns current phase/item state, `retry_count`, `loop_locked`, `negative_constraints`, and repo variance status.
+- `nebulous_verify_variance`: Runs `nebulous-ctl.py verify-variance` and returns structured `HARD_STOP_VARIANCE_LOCK` errors on any unapproved removal or downgrade.
+- `nebulous_run_docker_build`: Verifies the item is not loop-locked, runs the clean-room Stage 1–6 build inside `novos-builder`, and enforces post-build variance verification.
+- `nebulous_run_qemu_test`: Runs `test-docker-qemu.py` (`live-boot` or `install-e2e`) inside `novos-qemu-tester` and returns structured milestone/screendump telemetry.
+- `nebulous_record_diagnostic`: Records diagnostic attempts and triggers loop-breaker negative constraints if a failed diff is repeated.

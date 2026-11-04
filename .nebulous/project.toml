@@ -1,0 +1,27 @@
+# ==============================================================================
+# Nebulous Tiered Project Hierarchy & Guardrail Policy Configuration
+# ==============================================================================
+
+[project]
+id = "novos"
+name = "NovOS"
+version = "2026.10"
+codename = "nova"
+schema_version = 1
+
+[hierarchy]
+manifest_path = ".nebulous/manifest.toml"
+golden_snapshot_path = ".nebulous/golden-snapshot.toml"
+approvals_path = ".nebulous/approvals.toml"
+phases = [
+    ".nebulous/phases/phase-01-ci-foundation.toml",
+]
+
+[guardrails]
+variance_policy = "asymmetric_forward_only"
+allow_package_removal = false
+allow_version_downgrade = false
+allow_custom_tool_disable = false
+loop_repeat_warn_threshold = 2
+loop_max_retries_hard_stop = 3
+require_fresh_stage_1_to_6_build = true

@@ -1,0 +1,24 @@
+# ==============================================================================
+# Nebulous Phase 01: Dockerized Build/QEMU Verification & Nebulous MCP Guardrails
+# ==============================================================================
+
+items = [
+    ".nebulous/items/item-001-docker-qemu-ci.toml",
+]
+
+[phase]
+id = "phase-01-ci-foundation"
+project_id = "novos"
+title = "Dockerized Build/QEMU Verification & Nebulous MCP Guardrails"
+status = "in_progress"
+items = [
+    ".nebulous/items/item-001-docker-qemu-ci.toml",
+]
+
+[gates]
+require_manifest_check = true
+require_golden_variance_check = true
+tiers = [
+    "live-boot",
+    "install-e2e",
+]

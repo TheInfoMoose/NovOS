@@ -18,6 +18,14 @@ RAM_MB="8192"
 CPUS="4"
 RESET_VARS="false"
 USE_GL="false"
+USE_DOCKER="false"
+USE_HEADLESS="false"
+USE_VNC="false"
+TIER="live-boot"
+SKIP_VARIANCE_CHECK="false"
+ITEM_TOML=""
+TIMEOUT_SEC=""
+DRY_RUN="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,11 +57,93 @@ while [[ $# -gt 0 ]]; do
             RESET_VARS="true"
             shift
             ;;
+        --docker)
+            USE_DOCKER="true"
+            shift
+            ;;
+        --headless)
+            USE_HEADLESS="true"
+            shift
+            ;;
+        --vnc)
+            USE_VNC="true"
+            shift
+            ;;
+        --no-vnc)
+            USE_VNC="false"
+            shift
+            ;;
+        --tier)
+            TIER="$2"
+            shift 2
+            ;;
+        --item)
+            ITEM_TOML="$2"
+            shift 2
+            ;;
+        --timeout)
+            TIMEOUT_SEC="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN="true"
+            shift
+            ;;
+        --skip-variance-check)
+            SKIP_VARIANCE_CHECK="true"
+            shift
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+if [[ "$TIER" != "live-boot" && "$TIER" != "install-e2e" ]]; then
+    echo "[ERROR] Invalid --tier '${TIER}' (expected 'live-boot' or 'install-e2e')." >&2
+    exit 1
+fi
+
+HARNESS_EXTRA_ARGS=(
+    --ram "$RAM_MB"
+    --cpus "$CPUS"
+    --disk-size "$DISK_SIZE_GIB"
+)
+if [[ "$USE_VNC" == "true" ]]; then
+    HARNESS_EXTRA_ARGS+=(--vnc)
+else
+    HARNESS_EXTRA_ARGS+=(--no-vnc)
+fi
+if [[ -n "$ITEM_TOML" ]]; then
+    HARNESS_EXTRA_ARGS+=(--item "$ITEM_TOML")
+fi
+if [[ -n "$TIMEOUT_SEC" ]]; then
+    HARNESS_EXTRA_ARGS+=(--timeout "$TIMEOUT_SEC")
+fi
+if [[ "$DRY_RUN" == "true" ]]; then
+    HARNESS_EXTRA_ARGS+=(--dry-run)
+fi
+if [[ "$SKIP_VARIANCE_CHECK" == "true" ]]; then
+    HARNESS_EXTRA_ARGS+=(--skip-variance-check)
+fi
+
+if [[ "$USE_DOCKER" == "true" ]]; then
+    if [[ "$SKIP_VARIANCE_CHECK" != "true" && "$DRY_RUN" != "true" ]]; then
+        "${REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --iso "$ISO_DRIVE"
+    fi
+    DOCKER_ISO_DRIVE="${ISO_DRIVE/#${REPO_ROOT}\//./}"
+    DOCKER_TARGET_DISK="${TARGET_DISK/#${REPO_ROOT}\//./}"
+    exec docker compose -f "${REPO_ROOT}/docker/docker-compose.ci.yml" run --rm --service-ports novos-qemu-tester \
+        --iso "$DOCKER_ISO_DRIVE" --disk "$DOCKER_TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
+fi
+
+if [[ "$USE_HEADLESS" == "true" ]]; then
+    if [[ "$SKIP_VARIANCE_CHECK" != "true" && "$DRY_RUN" != "true" ]]; then
+        "${REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --iso "$ISO_DRIVE"
+    fi
+    exec python3 "${REPO_ROOT}/scripts/test-docker-qemu.py" \
+        --iso "$ISO_DRIVE" --disk "$TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
+fi
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci >/dev/null 2>&1; }; then
     echo "Installing QEMU/KVM and OVMF UEFI firmware..."
@@ -118,7 +208,9 @@ fi
 
 DEV_HELP="$(qemu-system-x86_64 -device help 2>&1 || true)"
 DISPLAY_ARGS=()
-if [[ "$USE_GL" == "true" ]]; then
+if [[ "$USE_VNC" == "true" ]]; then
+    DISPLAY_ARGS=(-device virtio-vga -vnc 0.0.0.0:0)
+elif [[ "$USE_GL" == "true" ]]; then
     if grep -q 'name "virtio-vga-gl"' <<<"$DEV_HELP"; then
         DISPLAY_ARGS=(-device virtio-vga-gl -display gtk,gl=on)
     elif grep -q 'name "virtio-gpu-gl-pci"' <<<"$DEV_HELP"; then
@@ -173,6 +265,10 @@ if [[ "$ISO_MBR_SIG" != "55aa" ]]; then
     echo "        Run a fresh end-to-end build first:" >&2
     echo "        sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso" >&2
     exit 1
+fi
+
+if [[ "$SKIP_VARIANCE_CHECK" != "true" ]]; then
+    "${REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --iso "$ISO_DRIVE"
 fi
 
 TARGET_DISK_DIR="$(dirname "$TARGET_DISK")"
