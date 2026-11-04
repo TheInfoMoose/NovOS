@@ -1,31 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
   <defs>
-    <!-- Deep Cosmic Space Background (#0B0C10 -> #121521) -->
+    <!-- Deep Cosmic Space Background (#0B0C10 -> #121521 -> #1B1B1B) -->
     <linearGradient id="cosmicSpace" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#0B0C10"/>
-      <stop offset="65%" stop-color="#0F121C"/>
-      <stop offset="100%" stop-color="#121521"/>
+      <stop offset="60%" stop-color="#121521"/>
+      <stop offset="100%" stop-color="#1B1B1B"/>
     </linearGradient>
 
-    <!-- Warm Nova Orange (#FF6B1A) and Amber (#FFB347) Horizon Nebula Arc -->
+    <!-- Warm Cosmic Amber (#FFAD00) and Nova Orange (#FF6B1A) Horizon Nebula Arc -->
     <radialGradient id="nebulaGlow" cx="62%" cy="88%" r="65%">
-      <stop offset="0%" stop-color="#FFB347" stop-opacity="0.55"/>
-      <stop offset="30%" stop-color="#FF6B1A" stop-opacity="0.38"/>
-      <stop offset="65%" stop-color="#FF6B1A" stop-opacity="0.10"/>
+      <stop offset="0%" stop-color="#FFAD00" stop-opacity="0.58"/>
+      <stop offset="32%" stop-color="#FF6B1A" stop-opacity="0.38"/>
+      <stop offset="68%" stop-color="#FF6B1A" stop-opacity="0.10"/>
       <stop offset="100%" stop-color="#0B0C10" stop-opacity="0.0"/>
     </radialGradient>
 
     <linearGradient id="horizonArc" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#FF6B1A" stop-opacity="0.0"/>
       <stop offset="30%" stop-color="#FF6B1A" stop-opacity="0.75"/>
-      <stop offset="65%" stop-color="#FFB347" stop-opacity="0.90"/>
+      <stop offset="65%" stop-color="#FFAD00" stop-opacity="0.92"/>
       <stop offset="100%" stop-color="#FF6B1A" stop-opacity="0.15"/>
     </linearGradient>
 
     <radialGradient id="emblemHalo" cx="50%" cy="50%" r="50%">
       <stop offset="0%" stop-color="#FFF3E0" stop-opacity="0.95"/>
-      <stop offset="28%" stop-color="#FFB347" stop-opacity="0.65"/>
+      <stop offset="28%" stop-color="#FFAD00" stop-opacity="0.65"/>
       <stop offset="60%" stop-color="#FF6B1A" stop-opacity="0.25"/>
       <stop offset="100%" stop-color="#FF6B1A" stop-opacity="0.0"/>
     </radialGradient>
@@ -181,16 +181,16 @@
   <!-- Horizon Nebula Glow & Arc -->
   <rect width="1920" height="1080" fill="url(#nebulaGlow)"/>
   <path d="M -100,1040 Q 980,680 2020,960" fill="none" stroke="url(#horizonArc)" stroke-width="6" opacity="0.85"/>
-  <path d="M -100,1065 Q 980,715 2020,995" fill="none" stroke="#FF6B1A" stroke-width="2" opacity="0.45"/>
+  <path d="M -100,1065 Q 980,715 2020,995" fill="none" stroke="#FFAD00" stroke-width="2" opacity="0.45"/>
 
   <!-- Center-Right Supernova Emblem (cx=1280, cy=460) -->
   <g transform="translate(1280, 460)">
     <circle cx="0" cy="0" r="220" fill="url(#emblemHalo)"/>
-    <circle cx="0" cy="0" r="145" fill="#0B0C10" fill-opacity="0.88" stroke="#FF6B1A" stroke-width="3" stroke-opacity="0.65"/>
+    <circle cx="0" cy="0" r="145" fill="#1B1B1B" fill-opacity="0.88" stroke="#FFAD00" stroke-width="3" stroke-opacity="0.65"/>
     <ellipse cx="0" cy="0" rx="115" ry="46" transform="rotate(-28)" fill="none" stroke="#FF6B1A" stroke-width="8" stroke-opacity="0.90"/>
-    <ellipse cx="0" cy="0" rx="94" ry="36" transform="rotate(-28)" fill="none" stroke="#FF9E44" stroke-width="4" stroke-opacity="0.85"/>
+    <ellipse cx="0" cy="0" rx="94" ry="36" transform="rotate(-28)" fill="none" stroke="#FFAD00" stroke-width="4" stroke-opacity="0.85"/>
     <circle cx="0" cy="0" r="68" fill="url(#emblemHalo)"/>
-    <polygon points="0,-58 8,-8 58,0 8,8 0,58 -8,8 -58,0 -8,-8" fill="#FFB347" opacity="0.85" transform="rotate(45)"/>
+    <polygon points="0,-58 8,-8 58,0 8,8 0,58 -8,8 -58,0 -8,-8" fill="#FFAD00" opacity="0.85" transform="rotate(45)"/>
     <polygon points="0,-125 14,-14 125,0 14,14 0,125 -14,14 -125,0 -14,-14" fill="#FFF3E0"/>
     <circle cx="0" cy="0" r="16" fill="#FFF3E0"/>
   </g>

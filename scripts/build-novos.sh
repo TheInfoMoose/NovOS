@@ -88,7 +88,6 @@ fi
 cleanup() {
     echo "==> Cleaning up chroot pseudo-filesystems and staging mounts..."
     if [[ -d "${MOUNT_ROOT}" ]]; then
-        kill_chroot_processes "${MOUNT_ROOT}"
         unmount_chroot_pseudo_fs "${MOUNT_ROOT}"
     fi
     sync || true
@@ -102,6 +101,36 @@ trap cleanup EXIT
 
 # 1. Verify Host Build Dependencies
 verify_host_deps "iso"
+
+ensure_host_rust_binaries() {
+    if [[ -x "${REPO_ROOT}/target/release/novos-slippery-tiles" && -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
+        return 0
+    fi
+    local cargo_bin=""
+    local sudo_home=""
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
+    fi
+    if [[ -n "$sudo_home" && -x "${sudo_home}/.cargo/bin/cargo" ]]; then
+        cargo_bin="${sudo_home}/.cargo/bin/cargo"
+    elif command -v cargo >/dev/null 2>&1; then
+        cargo_bin="$(command -v cargo)"
+    fi
+    if [[ -n "$cargo_bin" ]]; then
+        local cargo_env=()
+        if [[ -n "$sudo_home" ]]; then
+            [[ -d "${sudo_home}/.cargo" && -z "${CARGO_HOME:-}" ]] && cargo_env+=("CARGO_HOME=${sudo_home}/.cargo")
+            [[ -d "${sudo_home}/.rustup" && -z "${RUSTUP_HOME:-}" ]] && cargo_env+=("RUSTUP_HOME=${sudo_home}/.rustup")
+        fi
+        echo "==> Building NovOS Rust workspace binaries on host (${cargo_bin})..."
+        env "${cargo_env[@]}" "$cargo_bin" build --release --offline --manifest-path "${REPO_ROOT}/Cargo.toml" 2>/dev/null || \
+            env "${cargo_env[@]}" "$cargo_bin" build --release --manifest-path "${REPO_ROOT}/Cargo.toml" || true
+        if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && -d "${REPO_ROOT}/target" ]]; then
+            chown -R "${SUDO_UID}:${SUDO_GID}" "${REPO_ROOT}/target" 2>/dev/null || true
+        fi
+    fi
+}
+ensure_host_rust_binaries
 
 # 2. Purge Stale Artifacts Upfront
 mkdir -p "$(dirname "$ISO_PATH")"
@@ -123,8 +152,16 @@ mount_existing_tree() {
         mount --bind "$MOUNT_ROOT" "$MOUNT_ROOT"
         mount --make-rprivate "$MOUNT_ROOT"
     fi
-    mkdir -p "${MOUNT_ROOT}/root/novos-build/scripts/lib"
-    cp -rf "${REPO_ROOT}/config" "${REPO_ROOT}/scripts" "${REPO_ROOT}/branding" "${REPO_ROOT}/calamares" "${MOUNT_ROOT}/root/novos-build/"
+    mkdir -p "${MOUNT_ROOT}/root/novos-build/scripts/lib" "${MOUNT_ROOT}/root/novos-build/target/release"
+    cp -rf "${REPO_ROOT}/config" "${REPO_ROOT}/scripts" "${REPO_ROOT}/branding" "${REPO_ROOT}/calamares" \
+           "${REPO_ROOT}/crates" "${REPO_ROOT}/custom-tools" "${REPO_ROOT}/Cargo.toml" "${MOUNT_ROOT}/root/novos-build/"
+    if [[ -f "${REPO_ROOT}/Cargo.lock" ]]; then
+        cp -f "${REPO_ROOT}/Cargo.lock" "${MOUNT_ROOT}/root/novos-build/Cargo.lock"
+    fi
+    if [[ -f "${REPO_ROOT}/target/release/novos-slippery-tiles" && -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
+        install -m 0755 "${REPO_ROOT}/target/release/novos-slippery-tiles" "${MOUNT_ROOT}/root/novos-build/target/release/novos-slippery-tiles"
+        install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
+    fi
     cp -f "${SCRIPT_DIR}/lib/verify-deps.sh" "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
     chmod +x "${MOUNT_ROOT}/root/novos-build/scripts/stages/"*.sh "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
 }
@@ -143,6 +180,8 @@ run_in_chroot() {
         BUILD_PROFILES="${BUILD_PROFILES}" \
         NOVOS_TARGET_MODE="${TARGET_MODE}" \
         /bin/bash -euo pipefail "$stage_script"
+
+    chroot "${MOUNT_ROOT}" /usr/bin/gpgconf --kill all 2>/dev/null || true
 }
 
 # 3. Execute Stages 1 through 6 Sequentially

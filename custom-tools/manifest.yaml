@@ -1,0 +1,51 @@
+# ==============================================================================
+# NovOS Custom Tools & Ultrawide Component Manifest
+# ==============================================================================
+# Consumed by `/usr/local/bin/novos-custom-tools` during image build or post-boot
+# provisioning. Supports `local`, `github_release`, and `github_source` types.
+
+schema_version: 1
+
+tools:
+  - name: novos-slippery-tiles
+    enabled: true
+    type: local
+    description: "NovOS Slippery Tile Engine & Interactive gTile Grid Overlay (12x4 / 8x4)"
+    source_path: "target/release/novos-slippery-tiles"
+    build_command: "cargo build --release -p novos-slippery-tiles"
+    fallback_repo: "https://github.com/theinfomoose/NovOS.git"
+    fallback_branch: "main"
+    install_target: "/usr/local/bin/novos-slippery-tiles"
+    symlinks:
+      - "/usr/local/bin/novos-gtile-overlay"
+
+  - name: cosmic-comp-ultrawide-patch
+    enabled: false
+    type: github_source
+    description: "Template entry for pulling and building custom-patched pop-os/cosmic-comp or user ultrawide fork"
+    repo: "https://github.com/pop-os/cosmic-comp.git"
+    branch: "master"
+    build_system: "cargo"
+    build_command: "cargo build --release"
+    artifact_path: "target/release/cosmic-comp"
+    install_target: "/usr/local/bin/cosmic-comp"
+
+  - name: cosmic-ext-tweaks-release
+    enabled: false
+    type: github_release
+    description: "Example GitHub Release workflow supporting .deb, .AppImage, .tar.gz, or raw binary assets"
+    repo: "cosmic-utils/tweaks"
+    tag: "latest"
+    asset_format: "tar.gz"
+    asset_pattern: ".*x86_64.*\\.tar\\.gz$"
+    install_target: "/usr/local/bin/cosmic-ext-tweaks"
+
+  - name: uv-ruff-github-source
+    enabled: false
+    type: github_source
+    description: "Example GitHub Source workflow built via cargo / uv tool install / make"
+    repo: "https://github.com/astral-sh/ruff.git"
+    branch: "main"
+    build_system: "uv"
+    build_command: "uv tool install ."
+    install_target: "/usr/local/bin/ruff"

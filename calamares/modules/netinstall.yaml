@@ -4,8 +4,56 @@
 # subgroups for individual package customization during installation.
 # ==============================================================================
 ---
-- name: "Gaming Suite (XanMod + RDNA4 Optimized)"
-  description: "Steam, Lutris, Heroic, ProtonPlus, Protontricks, Bottles, Gamescope, GameMode, and MangoHud."
+- name: "Wireless & WiFi Connectivity Stack"
+  description: "Intel, Realtek, Atheros, MediaTek, and Broadcom wireless firmware with iwd and wpa_supplicant daemons. Deselect on wired-only desktops to purge WiFi daemons and firmware."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Wireless Daemons & Regulatory Tools"
+      description: "iwd, wpasupplicant, wireless-regdb, iw, and rfkill wireless management utilities."
+      selected: true
+      packages:
+        - novos-profile-wifi
+        - iwd
+        - wpasupplicant
+        - wireless-regdb
+        - iw
+        - rfkill
+    - name: "Wireless Network Firmware"
+      description: "WiFi firmware for Intel (iwlwifi), Realtek, Qualcomm Atheros, MediaTek, and Broadcom chipsets."
+      selected: true
+      packages:
+        - novos-profile-wifi
+        - firmware-iwlwifi
+        - firmware-realtek
+        - firmware-atheros
+        - firmware-mediatek
+        - firmware-brcm80211
+
+- name: "Bluetooth Audio & Peripherals Stack"
+  description: "BlueZ protocol stack, OBEX file transfer, Blueman desktop manager, and PipeWire Bluetooth audio (LDAC/aptX/AAC). Deselect to purge Bluetooth packages and mask bluetooth.service."
+  selected: true
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "BlueZ Stack & Blueman Desktop Manager"
+      description: "BlueZ daemon, OBEX object exchange daemon, and Blueman graphical device manager."
+      selected: true
+      packages:
+        - novos-profile-bluetooth
+        - bluez
+        - bluez-obexd
+        - blueman
+    - name: "PipeWire Bluetooth Audio Plugin"
+      description: "PipeWire SPA Bluetooth audio plugin for wireless headphones, headsets, and speakers."
+      selected: true
+      packages:
+        - novos-profile-bluetooth
+        - libspa-0.2-bluetooth
+
+- name: "Gaming & Emulation Suite (XanMod + RDNA4 Optimized)"
+  description: "Steam, Lutris, Heroic, ProtonPlus, Protontricks, Bottles, RPCS3, RetroArch, Dolphin, PCSX2, OpenRGB, CoreCtrl, Gamescope, GameMode, and MangoHud."
   selected: true
   critical: false
   expanded: false
@@ -26,30 +74,45 @@
         - lutris
         - wine
         - winetricks
+    - name: "Console & Handheld Emulators"
+      description: "RetroArch multi-system frontend, Dolphin (GameCube/Wii), and PCSX2 (PlayStation 2)."
+      selected: true
+      packages:
+        - retroarch
+        - dolphin-emu
+        - pcsx2
+    - name: "Hardware RGB & GPU Control"
+      description: "OpenRGB lighting control and CoreCtrl AMD GPU/CPU profile manager."
+      selected: true
+      packages:
+        - openrgb
+        - corectrl
     - name: "Flathub Gaming Launchers (via novos-setup)"
-      description: "Provisions Steam, Heroic Games Launcher, ProtonPlus, Protontricks, and Bottles via Flatpak."
+      description: "Provisions Steam, Heroic Games Launcher, ProtonPlus, Protontricks, Bottles, and RPCS3 via Flatpak."
       selected: true
       packages:
         - flatpak
 
-- name: "Development, Antigravity & Packaging Toolchain"
-  description: "Google Antigravity (IDE, 2.0 App, agy CLI), VS Code, Docker Engine, Rust (rustup), Python (uv), Haskell (GHC/Cabal/Stack), LLVM/Clang, Packaging Tools, and GPU Terminals."
+- name: "Development, Antigravity, Containers & Virtualization"
+  description: "Google Antigravity (IDE & agy CLI), VS Code, Neovim, Helix, Docker, Podman, Distrobox, KVM/QEMU, LLVM/Clang, Rust, Python (uv), Haskell, Node.js, Go, Zig, Ghostty, and Packaging Tools."
   selected: true
   critical: false
   expanded: false
   subgroups:
     - name: "Google Antigravity IDE & CLI"
-      description: "Google Antigravity IDE, Antigravity 2.0 application, and agy CLI agentic toolchain (via novos-setup)."
+      description: "Google Antigravity IDE and agy CLI agentic toolchain."
       selected: true
       packages:
         - antigravity
-    - name: "Visual Studio Code"
-      description: "Microsoft Visual Studio Code editor from official upstream repository."
+    - name: "Code Editors (VS Code, Neovim & Helix)"
+      description: "Microsoft Visual Studio Code, Neovim, and Helix modal terminal editor."
       selected: true
       packages:
         - code
-    - name: "Docker Engine & Compose"
-      description: "Docker CE, CLI, containerd.io, Buildx, and Compose v2 plugin."
+        - neovim
+        - hx
+    - name: "Docker, Podman & Distrobox Containers"
+      description: "Docker CE, Compose v2, rootless Podman, Buildah, Skopeo, and Distrobox container workflows."
       selected: true
       packages:
         - docker-ce
@@ -57,8 +120,19 @@
         - containerd.io
         - docker-buildx-plugin
         - docker-compose-plugin
-    - name: "LLVM, Clang & C/C++ Build Toolchain"
-      description: "Clang, LLD linker, LLVM toolchain, CMake, and Ninja build system."
+        - podman
+        - buildah
+        - skopeo
+        - distrobox
+    - name: "KVM / QEMU Hardware Virtualization"
+      description: "QEMU x86_64 hypervisor, libvirt system daemon, and Virt-Manager graphical console."
+      selected: true
+      packages:
+        - qemu-system-x86
+        - libvirt-daemon-system
+        - virt-manager
+    - name: "Polyglot Compilers & Language Toolchains"
+      description: "LLVM/Clang, CMake, Ninja, Python 3, Haskell (GHC/Cabal/Stack), Node.js/npm, Go, and Zig (plus Rust/uv via novos-setup)."
       selected: true
       packages:
         - clang
@@ -66,21 +140,25 @@
         - llvm
         - cmake
         - ninja-build
-    - name: "Python Development Toolchain"
-      description: "Full Python 3 runtime, development headers, pip, and venv (supplemented by Astral uv)."
-      selected: true
-      packages:
         - python3-full
         - python3-dev
         - python3-pip
         - python3-venv
-    - name: "Haskell Toolchain (GHC / Cabal / Stack)"
-      description: "Glasgow Haskell Compiler, Cabal build tool, and Haskell Stack."
-      selected: true
-      packages:
         - ghc
         - cabal-install
         - haskell-stack
+        - nodejs
+        - npm
+        - golang-go
+        - zig
+    - name: "Git Workflows & GPU-Accelerated Terminals"
+      description: "GitHub CLI (gh), Lazygit TUI, Alacritty, and Ghostty GPU-accelerated terminal emulators."
+      selected: true
+      packages:
+        - gh
+        - lazygit
+        - alacritty
+        - ghostty
     - name: "AppImage, RPM & DEB Packaging Tools"
       description: "Alien package converter, rpm2cpio, cpio, patchelf, squashfs-tools, desktop-file-utils, and zsync."
       selected: true
@@ -92,11 +170,50 @@
         - squashfs-tools
         - desktop-file-utils
         - zsync
-    - name: "TTY & GPU-Accelerated Terminals (Ghostty & Alacritty)"
-      description: "Alacritty and Ghostty (provisioned via novos-setup) GPU-accelerated terminal emulators."
-      selected: true
+
+- name: "DevSecOps, Pentesting & Kali Rolling Box (novos-sec-box)"
+  description: "Offensive/defensive security suite with Nmap, Wireshark, John, Hashcat, Aircrack-ng, Radare2, UFW/Firewalld, and isolated Kali Rolling Distrobox integration (novos-sec-box)."
+  selected: false
+  critical: false
+  expanded: false
+  subgroups:
+    - name: "Network Discovery & Packet Analysis"
+      description: "Nmap network scanner, Wireshark graphical analyzer, TShark CLI, tcpdump, and OpenBSD netcat."
+      selected: false
       packages:
-        - alacritty
+        - nmap
+        - wireshark
+        - tshark
+        - tcpdump
+        - netcat-openbsd
+    - name: "Password & Wireless Auditing"
+      description: "John the Ripper, Hashcat GPU password recovery, Aircrack-ng wireless suite, and THC-Hydra."
+      selected: false
+      packages:
+        - john
+        - hashcat
+        - aircrack-ng
+        - hydra
+    - name: "Web Assessment & Reverse Engineering"
+      description: "SQLMap, Gobuster directory scanner, Radare2 reverse engineering framework, and GDB."
+      selected: false
+      packages:
+        - sqlmap
+        - gobuster
+        - radare2
+        - gdb
+    - name: "Host Firewalls"
+      description: "Uncomplicated Firewall (UFW) and dynamically managed Firewalld."
+      selected: false
+      packages:
+        - ufw
+        - firewalld
+    - name: "Kali Rolling Distrobox Environment (novos-sec-box)"
+      description: "Podman and Distrobox runtime backing /usr/local/bin/novos-sec-box (kalilinux/kali-rolling)."
+      selected: false
+      packages:
+        - distrobox
+        - podman
 
 - name: "Local AI, Hosted LLM & ComfyUI Stack (/srv/llm)"
   description: "Ollama & llama.cpp (ROCm/Vulkan RDNA4 accelerated), Containerized ComfyUI & Open WebUI bound to @llm, Hugging Face CLI (hf), nvtop, and amdgpu_top."
@@ -122,7 +239,7 @@
         - spirv-tools
 
 - name: "Workstation Network, Remote & NAS (DevShare)"
-  description: "Samba [DevShare] at /srv/devshare, Remmina (RDP/VNC), Tailscale, WireGuard, and OpenSSH Server."
+  description: "Samba [DevShare] at /srv/devshare, Remmina (RDP/VNC), Tailscale, WireGuard, OpenSSH Server, Syncthing, and Rclone."
   selected: true
   critical: false
   expanded: false
@@ -141,74 +258,109 @@
         - remmina
         - remmina-plugin-rdp
         - remmina-plugin-vnc
-    - name: "VPN & SSH Server"
-      description: "WireGuard VPN tools and OpenSSH Server daemon."
+    - name: "VPN, Mesh Networking & SSH Server"
+      description: "WireGuard VPN tools, Tailscale mesh VPN, and OpenSSH Server daemon."
       selected: true
       packages:
         - wireguard-tools
         - openssh-server
+        - tailscale
+    - name: "Cloud & Peer-to-Peer File Sync"
+      description: "Syncthing continuous file synchronization and Rclone cloud storage swiss-army knife."
+      selected: true
+      packages:
+        - syncthing
+        - rclone
 
-- name: "Web Browsers & Internet"
-  description: "Optional web browsers including Firefox ESR and Chromium."
+- name: "Web Browsers, Email & Team Communications"
+  description: "Firefox ESR, Chromium, Thunderbird, plus Flathub browsers and encrypted team messengers (Brave, LibreWolf, Zen Browser, Discord, Vesktop, Signal, Element)."
   selected: false
   critical: false
   expanded: false
   subgroups:
-    - name: "Firefox ESR"
-      description: "Mozilla Firefox Extended Support Release web browser."
+    - name: "Native Web Browsers & Email Client"
+      description: "Mozilla Firefox ESR, Chromium web browser, and Mozilla Thunderbird email/calendar suite."
       selected: false
       packages:
         - firefox-esr
-    - name: "Chromium"
-      description: "Open-source Chromium web browser."
+        - chromium
+        - thunderbird
+    - name: "Flathub Browsers & Team Communications (via novos-setup)"
+      description: "Provisions Brave, LibreWolf, Zen Browser, Discord, Vesktop, Signal, and Element via Flatpak."
       selected: false
       packages:
-        - chromium
+        - flatpak
 
-- name: "Media, Graphics & Creative Suite"
-  description: "Optional media playback, live streaming, video editing, 2D design, and 3D creation applications."
+- name: "Media, Pro Audio & 2D/3D Creative Suite"
+  description: "VLC, mpv, HandBrake, OBS Studio, Kdenlive, GIMP, Inkscape, Krita, Darktable, Blender, FreeCAD, Audacity, Ardour, and PipeWire JACK."
   selected: false
   critical: false
   expanded: false
   subgroups:
-    - name: "Media Players"
-      description: "VLC media player and mpv command-line/minimalist video player."
+    - name: "Media Playback & Video Transcoding"
+      description: "VLC media player, mpv minimalist player, and HandBrake video transcoder."
       selected: false
       packages:
         - vlc
         - mpv
-    - name: "Streaming & Video Editing"
-      description: "OBS Studio for recording/streaming and Kdenlive non-linear video editor."
+        - handbrake
+    - name: "Streaming & Non-Linear Video Editing"
+      description: "OBS Studio for recording/streaming and Kdenlive video editor."
       selected: false
       packages:
         - obs-studio
         - kdenlive
-    - name: "Design & 3D Creation"
-      description: "GIMP image editor, Inkscape vector graphics editor, and Blender 3D creation suite."
+    - name: "2D Design, Digital Painting & RAW Photography"
+      description: "GIMP image editor, Inkscape vector graphics, Krita digital painting, and Darktable RAW workflow."
       selected: false
       packages:
         - gimp
         - inkscape
+        - krita
+        - darktable
+    - name: "3D Creation & Parametric CAD"
+      description: "Blender 3D creation suite and FreeCAD parametric 3D modeler."
+      selected: false
+      packages:
         - blender
+        - freecad
+    - name: "Pro Audio DAW & PipeWire JACK Routing"
+      description: "Audacity audio editor, Ardour digital audio workstation, and PipeWire low-latency JACK bridge."
+      selected: false
+      packages:
+        - audacity
+        - ardour
+        - pipewire-jack
 
-- name: "System Utilities & Office Productivity"
-  description: "Optional office productivity suite and power CLI/GUI workstation utilities."
+- name: "System Administration, Btrfs & Office Productivity"
+  description: "LibreOffice, Timeshift, Btrfs Assistant, GParted, KeePassXC, Fastfetch, tmux, ripgrep, fd-find, plus Mission Center, LocalSend, and Bitwarden."
   selected: false
   critical: false
   expanded: false
   subgroups:
-    - name: "LibreOffice Suite"
-      description: "Full LibreOffice productivity suite (Writer, Calc, Impress, Draw)."
+    - name: "LibreOffice Productivity Suite"
+      description: "Full LibreOffice suite (Writer, Calc, Impress, Draw)."
       selected: false
       packages:
         - libreoffice
-    - name: "Power CLI & GUI Utilities"
-      description: "Fastfetch, GParted partition editor, KeePassXC password manager, tmux, ripgrep, and fd-find."
+    - name: "Btrfs Management & Partitioning"
+      description: "Timeshift system restore, Btrfs Assistant GUI, and GParted partition editor."
+      selected: false
+      packages:
+        - timeshift
+        - btrfs-assistant
+        - gparted
+    - name: "Power CLI & Workstation Utilities"
+      description: "Fastfetch, KeePassXC password manager, tmux multiplexer, ripgrep, and fd-find."
       selected: false
       packages:
         - fastfetch
-        - gparted
         - keepassxc
         - tmux
         - ripgrep
         - fd-find
+    - name: "Flathub Power Tools (via novos-setup)"
+      description: "Provisions Mission Center, LocalSend, and Bitwarden via Flatpak."
+      selected: false
+      packages:
+        - flatpak

@@ -2,37 +2,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <radialGradient id="obsidianBadge" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#121521"/>
-      <stop offset="75%" stop-color="#0B0C10"/>
-      <stop offset="100%" stop-color="#07080B"/>
+      <stop offset="0%" stop-color="#1B1B1B"/>
+      <stop offset="65%" stop-color="#121521"/>
+      <stop offset="100%" stop-color="#0B0C10"/>
     </radialGradient>
     <linearGradient id="accretionRingOuter" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FF6B1A"/>
-      <stop offset="50%" stop-color="#FF9E44"/>
+      <stop offset="50%" stop-color="#FFAD00"/>
       <stop offset="100%" stop-color="#FF6B1A"/>
     </linearGradient>
     <linearGradient id="accretionRingInner" x1="100%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#FF9E44"/>
+      <stop offset="0%" stop-color="#FFAD00"/>
       <stop offset="50%" stop-color="#FFB347"/>
       <stop offset="100%" stop-color="#FF6B1A"/>
     </linearGradient>
     <radialGradient id="coreGlow" cx="50%" cy="50%" r="45%">
       <stop offset="0%" stop-color="#FFF3E0" stop-opacity="1.0"/>
-      <stop offset="35%" stop-color="#FF9E44" stop-opacity="0.85"/>
+      <stop offset="35%" stop-color="#FFAD00" stop-opacity="0.85"/>
       <stop offset="70%" stop-color="#FF6B1A" stop-opacity="0.35"/>
       <stop offset="100%" stop-color="#FF6B1A" stop-opacity="0.0"/>
     </radialGradient>
   </defs>
 
-  <!-- Deep Obsidian Circular Badge (#0B0C10) -->
-  <circle cx="128" cy="128" r="120" fill="url(#obsidianBadge)" stroke="#FF6B1A" stroke-width="3" stroke-opacity="0.55"/>
-  <circle cx="128" cy="128" r="112" fill="none" stroke="#1E2233" stroke-width="1.5"/>
+  <!-- Deep Obsidian Circular Badge (#1B1B1B -> #0B0C10) -->
+  <circle cx="128" cy="128" r="120" fill="url(#obsidianBadge)" stroke="#FFAD00" stroke-width="3" stroke-opacity="0.60"/>
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#262626" stroke-width="1.5"/>
 
-  <!-- Glowing Nova Orange Accretion Rings (#FF6B1A -> #FF9E44) -->
+  <!-- Glowing Nova Amber-Orange Accretion Rings (#FF6B1A -> #FFAD00) -->
   <ellipse cx="128" cy="128" rx="92" ry="38" transform="rotate(-28 128 128)"
-           fill="none" stroke="url(#accretionRingOuter)" stroke-width="7" stroke-opacity="0.9"/>
+           fill="none" stroke="url(#accretionRingOuter)" stroke-width="7" stroke-opacity="0.92"/>
   <ellipse cx="128" cy="128" rx="76" ry="30" transform="rotate(-28 128 128)"
-           fill="none" stroke="url(#accretionRingInner)" stroke-width="3.5" stroke-opacity="0.85"/>
+           fill="none" stroke="url(#accretionRingInner)" stroke-width="3.5" stroke-opacity="0.88"/>
   <circle cx="128" cy="128" r="58" fill="none" stroke="url(#accretionRingOuter)" stroke-width="2.5" stroke-opacity="0.65" stroke-dasharray="18 8"/>
 
   <!-- Supernova Core Halo -->
@@ -40,7 +40,7 @@
 
   <!-- Secondary Diagonal Star Rays -->
   <polygon points="128,84 134,122 172,128 134,134 128,172 122,134 84,128 122,122"
-           fill="#FF9E44" opacity="0.85" transform="rotate(45 128 128)"/>
+           fill="#FFAD00" opacity="0.88" transform="rotate(45 128 128)"/>
 
   <!-- Radiant 4-Point Star Flare Core (#FFF3E0) -->
   <polygon points="128,28 139,117 228,128 139,139 128,228 117,139 28,128 117,117"

@@ -1,0 +1,11 @@
+[package]
+name = "novos-custom-tools"
+version = "0.1.0"
+edition = "2021"
+description = "NovOS Declarative Custom Tools & GitHub Component Builder"
+
+[[bin]]
+name = "novos-custom-tools"
+path = "src/main.rs"
+
+[dependencies]

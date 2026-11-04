@@ -195,10 +195,10 @@ def _ensure_efi_partition_and_bios_grub(root_mount_point, gs_partitions=None):
         return parent_disk, root_dev, efi_part_num
 
     # BIOS install mode: Calamares only created the Btrfs root partition.
-    # Dynamically shrink Btrfs root filesystem by 2132 MiB and shrink the root
-    # partition by 2100 MiB via sfdisk (without calling `btrfs filesystem resize max`,
+    # Dynamically shrink Btrfs root filesystem by 6228 MiB and shrink the root
+    # partition by 6196 MiB via sfdisk (without calling `btrfs filesystem resize max`,
     # which would expand Btrfs back to the kernel's cached unshrunk block device size),
-    # then create a 2048 MiB FAT32 partition (NOVOS_EFI) (and a 2 MiB bios_grub
+    # then create a 6144 MiB FAT32 partition (NOVOS_EFI) (and a 2 MiB bios_grub
     # partition if GPT) via sfdisk -a, register device nodes with partx, mount at
     # /boot/efi, and append UUID= to /etc/fstab.
     backup_dir = "/tmp/novos-efi-premount-backup"
@@ -212,7 +212,7 @@ def _ensure_efi_partition_and_bios_grub(root_mount_point, gs_partitions=None):
         else:
             shutil.copy2(src_item, dst_item)
 
-    _run_host(["btrfs", "filesystem", "resize", "-2132M", root_mount_point], check=True)
+    _run_host(["btrfs", "filesystem", "resize", "-6228M", root_mount_point], check=True)
     _run_host(["sync"], check=False)
 
     pttable, parts = _parse_parted_mib(parent_disk)
@@ -221,10 +221,10 @@ def _ensure_efi_partition_and_bios_grub(root_mount_point, gs_partitions=None):
 
     root_start_mib = parts[root_part_num]["start_mib"]
     root_end_mib = parts[root_part_num]["end_mib"]
-    new_root_end_mib = root_end_mib - 2100
+    new_root_end_mib = root_end_mib - 6196
     if new_root_end_mib <= root_start_mib + 1024:
         raise RuntimeError(
-            f"Insufficient space on {root_dev} ({root_end_mib} MiB) to shrink by 2100 MiB"
+            f"Insufficient space on {root_dev} ({root_end_mib} MiB) to shrink by 6196 MiB"
         )
 
     _resize_partition_end_mib(parent_disk, root_part_num, root_start_mib, new_root_end_mib)
@@ -250,7 +250,7 @@ def _ensure_efi_partition_and_bios_grub(root_mount_point, gs_partitions=None):
         _run_host(
             ["sfdisk", "--no-reread", "--force", "-a", parent_disk],
             check=True,
-            input_text=", 2048MiB, C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n",
+            input_text=", 6144MiB, C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n",
         )
         _, parts_after_efi = _parse_parted_mib(parent_disk)
         new_efi_pnums = sorted(set(parts_after_efi.keys()) - before_efi_pnums)
@@ -263,7 +263,7 @@ def _ensure_efi_partition_and_bios_grub(root_mount_point, gs_partitions=None):
         _run_host(
             ["sfdisk", "--no-reread", "--force", "-a", parent_disk],
             check=True,
-            input_text=", 2048MiB, c, *\n",
+            input_text=", 6144MiB, c, *\n",
         )
         _, parts_after_efi = _parse_parted_mib(parent_disk)
         new_efi_pnums = sorted(set(parts_after_efi.keys()) - before_pnums)

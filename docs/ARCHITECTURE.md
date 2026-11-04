@@ -187,8 +187,8 @@ sequenceDiagram
     Cal->>Disk: 4. shellprocess@novos (restores greetd user="cosmic-greeter", enables Snapper hooks, chattr +C)
     Cal->>Mod: 5. Executes custom Python job module (limine-bootloader)
     alt Booted in Legacy BIOS / SeaBIOS Mode (/boot/efi not mounted)
-        Mod->>Disk: Shrinks Btrfs / by 2132 MiB & root partition by 2100 MiB (sfdisk)
-        Mod->>Disk: Creates 2 MiB bios_grub (EF02 if GPT) + 2048 MiB FAT32 NOVOS_EFI mounted at /boot/efi
+        Mod->>Disk: Shrinks Btrfs / by 6228 MiB & root partition by 6196 MiB (sfdisk)
+        Mod->>Disk: Creates 2 MiB bios_grub (EF02 if GPT) + 6144 MiB FAT32 NOVOS_EFI mounted at /boot/efi
         Mod->>Disk: Appends UUID=<efi_uuid> /boot/efi vfat entry to /etc/fstab
     end
     Mod->>Disk: Syncs BOOTX64.EFI, limine-bios.sys, nova-wallpaper.png & kernels to FAT32 /boot/efi
@@ -211,5 +211,5 @@ When the user installs NovOS to disk via Calamares:
    * Applies `chattr +C` to `/var/lib/docker`, `/var/lib/containerd`, and `/srv/llm`.
    * Invokes `/usr/local/bin/novos-setup` for each selected `novos-profile-*` marker package.
 4. **`limine-bootloader` ([`calamares/modules/limine-bootloader/main.py`](../calamares/modules/limine-bootloader/main.py)):**
-   * Guarantees a mounted FAT32 `/boot/efi` partition on both UEFI and Legacy BIOS installs (dynamically carving a `2048 MiB` `NOVOS_EFI` partition + `2 MiB` `bios_grub` partition when installed under SeaBIOS/Legacy BIOS).
+   * Guarantees a mounted FAT32 `/boot/efi` partition on both UEFI and Legacy BIOS installs (dynamically carving a `6144 MiB` `NOVOS_EFI` partition + `2 MiB` `bios_grub` partition when installed under SeaBIOS/Legacy BIOS).
    * Copies Limine UEFI/BIOS binaries and kernels onto `/boot/efi`, runs `limine bios-install <disk>`, registers `NovOS` in UEFI NVRAM via `efibootmgr`, creates the **Golden Master Base** writable Btrfs snapshot (`/.snapshots/1/snapshot`), and generates `/boot/efi/limine/limine.conf`.

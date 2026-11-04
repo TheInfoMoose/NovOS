@@ -46,11 +46,16 @@
   3. Apply exact deterministic mutations via `write_file` / `edit_file`.
   4. Execute `POST_GATE` to verify syntax, schema, and dependency invariants.
 * **Single-Step Halt Invariant (`HALT_AFTER_STEP`):** Never chain multiple steps in one turn. Halt immediately after `POST_GATE` passes and report the gate result.
+* **Argon Prompt & Planning Invariants:**
+  1. **Always Persist to Repository `.md` Plan File Immediately:** During `/plan`, write all atomic steps and full Argon prompts directly to the repository's `.md` plan file (e.g., `STEPPED_IMPLEMENTATION_PLAN.md`) during the planning turn itself (as well as the `implementation_plan.md` artifact) before halting for approval.
+  2. **Maximum Atomic Granularity:** Decompose tasks into narrow, single-concern atomic steps (1–3 closely coupled files per step).
+  3. **Complete Argon Prompt Blocks:** Every step must include its full `[STEP_ID]`, `[SCOPE_LOCK]`, `[PRE_GATE]`, `[MUTATION_SPEC]`, `[POST_GATE]`, and `[HALT_INVARIANT]` block.
+  4. **Single Deterministic Slash Command:** Every step must specify **exactly one** recommended slash command (either `/goal` for bounded deterministic mutations with static gates, OR `/boost` for complex cross-subsystem wiring requiring deep verification—never write `/goal or /boost`).
 
 ### 2.5 User–Agent Hand-Off & Anti-Double-Work Protocol
 * **Strict Mode Separation (`DIAGNOSE` vs. `PLAN` vs. `EXECUTE`):**
   * *Diagnose ("troubleshoot", "locate cause", "review"):* Read logs/code and report root cause only. Zero file edits.
-  * *Plan (`/plan`):* Write atomic Argon step prompts directly to the designated repository `.md` playbook (not just chat artifacts) and halt for approval.
+  * *Plan (`/plan`):* Write atomic Argon step prompts (with single deterministic slash command recommendations) directly to the designated repository `.md` playbook (`STEPPED_IMPLEMENTATION_PLAN.md`) and mirror them in the `implementation_plan.md` artifact, then halt for approval before modifying code/script files.
   * *Execute (`/goal`, `/boost`, "Proceed"):* Verify current repo state first so completed work is never repeated, apply scoped mutations, wait for all subagents to finish, and run static `POST_GATE` checks.
 * **Host Build & VM Test Boundary:** The user executes privileged host builds (`sudo ./scripts/build-novos.sh`) and VM boot validation (GNOME Boxes / QEMU) and provides logs in `logs/`. Agents must not re-run host builds or invoke prohibited VM tests unless explicitly instructed.
 

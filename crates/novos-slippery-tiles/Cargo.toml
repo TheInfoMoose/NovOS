@@ -1,0 +1,11 @@
+[package]
+name = "novos-slippery-tiles"
+version = "0.1.0"
+edition = "2021"
+description = "NovOS Slippery Tile Engine & Interactive gTile Grid Overlay Manager (12x4 / 8x4)"
+
+[[bin]]
+name = "novos-slippery-tiles"
+path = "src/main.rs"
+
+[dependencies]

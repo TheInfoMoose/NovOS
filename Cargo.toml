@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/novos-slippery-tiles",
+    "crates/novos-custom-tools",
+]

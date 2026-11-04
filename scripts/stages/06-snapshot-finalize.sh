@@ -130,8 +130,13 @@ check_file /etc/pam.d/greetd
 check_file /usr/share/dbus-1/system.d/com.system76.CosmicGreeter.conf
 check_file /usr/local/bin/cosmic-greeter-launch
 check_file /usr/local/bin/cosmic-session-launch
+check_file /usr/local/bin/novos-wallpaper-auto
 check_file /usr/local/bin/novos-setup
 check_file /usr/local/bin/novos-llm-stack
+check_file /usr/local/bin/novos-slippery-tiles
+check_file /usr/local/bin/novos-custom-tools
+check_file /usr/local/bin/novos-sec-box
+check_file /etc/novos/custom-tools.yaml
 check_file /etc/os-release
 check_file /etc/lsb-release
 check_file /etc/issue
@@ -200,17 +205,17 @@ chroot "${MOUNT_ROOT}" /usr/bin/env -i \
         fi
 
         apt-get update
-        apt-get -o DPkg::Pre-Invoke::="" -o DPkg::Post-Invoke::="" install -y --no-remove \
+        apt-get -o DPkg::Pre-Invoke::="" -o DPkg::Post-Invoke::="" -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y \
             calamares initramfs-tools-core busybox rsync uuid-runtime eject \
             squashfs-tools xorriso mtools dosfstools parted fdisk gdisk efibootmgr polkitd pkexec \
             klibc-utils libklibc udev kmod xz-utils zstd live-config live-config-systemd dbus-x11
 
         # In Debian sid, live-boot-initramfs-tools depends on initramfs-tools which conflicts
-        # with dracut (pinned in Stage 3). Attempt direct install first; if blocked by dracut,
-        # download and extract live-boot + live-boot-initramfs-tools payloads so mkinitramfs
-        # (from initramfs-tools-core) has the live hooks while dracut and dpkg stay clean.
-        if ! apt-get -o DPkg::Pre-Invoke::="" -o DPkg::Post-Invoke::="" install -y --no-remove --no-install-recommends \
-            live-boot live-boot-initramfs-tools live-config live-config-systemd 2>/dev/null; then
+        # with dracut (pinned in Stage 3). Attempt direct install alongside dracut first; if blocked
+        # by dracut conflict, download and extract live-boot + live-boot-initramfs-tools payloads so
+        # mkinitramfs (from initramfs-tools-core) has the live hooks while dracut and dpkg stay clean.
+        if ! apt-get -o DPkg::Pre-Invoke::="" -o DPkg::Post-Invoke::="" -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y --no-remove --no-install-recommends \
+            dracut live-boot live-boot-initramfs-tools live-config live-config-systemd 2>/dev/null; then
             echo "==> [Stage 6.2] Provisioning live-boot & live-boot-initramfs-tools alongside dracut..."
             rm -rf /tmp/novos-live-debs /tmp/novos-live-extract
             mkdir -p /tmp/novos-live-debs /tmp/novos-live-extract
@@ -248,14 +253,34 @@ chroot "${MOUNT_ROOT}" /usr/bin/env -i \
 
 echo "==> [Stage 6.3] Installing NovOS Calamares Configuration, Branding & Limine Module..."
 mkdir -p "${MOUNT_ROOT}/etc/calamares/modules" \
+         "${MOUNT_ROOT}/usr/share/calamares/modules" \
          "${MOUNT_ROOT}/etc/calamares/branding/novos" \
-         "${MOUNT_ROOT}/usr/lib/calamares/modules/limine-bootloader"
+         "${MOUNT_ROOT}/usr/lib/calamares/modules/limine-bootloader" \
+         "${MOUNT_ROOT}/usr/lib/x86_64-linux-gnu/calamares/modules/limine-bootloader"
 
 cp -f "${REPO_ROOT}/calamares/settings.conf" "${MOUNT_ROOT}/etc/calamares/settings.conf"
+cp -f "${REPO_ROOT}/calamares/settings.conf" "${MOUNT_ROOT}/usr/share/calamares/settings.conf"
 cp -f "${REPO_ROOT}/calamares/modules/"*.conf "${MOUNT_ROOT}/etc/calamares/modules/"
 cp -f "${REPO_ROOT}/calamares/modules/"*.yaml "${MOUNT_ROOT}/etc/calamares/modules/"
+cp -f "${REPO_ROOT}/calamares/modules/"*.conf "${MOUNT_ROOT}/usr/share/calamares/modules/"
+cp -f "${REPO_ROOT}/calamares/modules/"*.yaml "${MOUNT_ROOT}/usr/share/calamares/modules/"
+
+for sp_conf in \
+    "${MOUNT_ROOT}/etc/calamares/modules/"shellprocess*.conf \
+    "${MOUNT_ROOT}/usr/share/calamares/modules/"shellprocess*.conf; do
+    if [[ ! -f "$sp_conf" ]]; then
+        echo "[FATAL] Missing expected Calamares shellprocess config: ${sp_conf}" >&2
+        exit 1
+    fi
+    if grep -q '\$' "$sp_conf" || grep -q '@@USER@@' "$sp_conf"; then
+        echo "[FATAL] Calamares shellprocess config contains forbidden '\$' or '@@USER@@': ${sp_conf}" >&2
+        exit 1
+    fi
+done
 cp -rf "${REPO_ROOT}/calamares/modules/limine-bootloader/"* "${MOUNT_ROOT}/usr/lib/calamares/modules/limine-bootloader/"
-chmod +x "${MOUNT_ROOT}/usr/lib/calamares/modules/limine-bootloader/main.py"
+cp -rf "${REPO_ROOT}/calamares/modules/limine-bootloader/"* "${MOUNT_ROOT}/usr/lib/x86_64-linux-gnu/calamares/modules/limine-bootloader/"
+chmod +x "${MOUNT_ROOT}/usr/lib/calamares/modules/limine-bootloader/main.py" \
+         "${MOUNT_ROOT}/usr/lib/x86_64-linux-gnu/calamares/modules/limine-bootloader/main.py"
 
 cp -rf "${REPO_ROOT}/calamares/branding/novos/"* "${MOUNT_ROOT}/etc/calamares/branding/novos/"
 cp -f "${REPO_ROOT}/calamares/branding/novos/stylesheet.qss" "${MOUNT_ROOT}/etc/calamares/branding/novos/stylesheet.qss"

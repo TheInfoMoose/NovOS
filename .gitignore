@@ -34,4 +34,6 @@ logs/
 *.log
 *.logs.txt
 
-
+# Dev md
+STEPPED_IMPLEMENTATION_PLAN.md
+verbot-prompt.md

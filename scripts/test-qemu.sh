@@ -12,6 +12,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${REPO_ROOT}/config/build.env"
 
 ISO_DRIVE="${ISO_PATH:-./build/NovOS-sid-amd64.iso}"
+TARGET_DISK="${REPO_ROOT}/build/novos-calamares-target.img"
+DISK_SIZE_GIB="64"
 RAM_MB="8192"
 CPUS="4"
 RESET_VARS="false"
@@ -21,6 +23,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --iso)
             ISO_DRIVE="$2"
+            shift 2
+            ;;
+        --disk)
+            TARGET_DISK="$2"
+            shift 2
+            ;;
+        --disk-size)
+            DISK_SIZE_GIB="${2%[Gg]*}"
             shift 2
             ;;
         --gl)
@@ -45,10 +55,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; }; then
+if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci >/dev/null 2>&1; }; then
     echo "Installing QEMU/KVM and OVMF UEFI firmware..."
     if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -Sy --noconfirm --needed qemu-system-x86 qemu-ui-gtk edk2-ovmf
+        sudo pacman -Sy --noconfirm --needed qemu-system-x86 qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci edk2-ovmf
     elif command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
     else
@@ -106,15 +116,25 @@ if [[ "${#UEFI_ARGS[@]}" -eq 0 ]]; then
     exit 1
 fi
 
-DISPLAY_ARGS=(
-    -device virtio-vga
-    -display gtk
-)
+DEV_HELP="$(qemu-system-x86_64 -device help 2>&1 || true)"
+DISPLAY_ARGS=()
 if [[ "$USE_GL" == "true" ]]; then
-    DISPLAY_ARGS=(
-        -device virtio-vga-gl
-        -display gtk,gl=on
-    )
+    if grep -q 'name "virtio-vga-gl"' <<<"$DEV_HELP"; then
+        DISPLAY_ARGS=(-device virtio-vga-gl -display gtk,gl=on)
+    elif grep -q 'name "virtio-gpu-gl-pci"' <<<"$DEV_HELP"; then
+        DISPLAY_ARGS=(-device virtio-gpu-gl-pci -display gtk,gl=on)
+    else
+        echo "[WARN] OpenGL display device (virtio-vga-gl / virtio-gpu-gl-pci) not available in QEMU; falling back to non-GL display." >&2
+    fi
+fi
+if [[ "${#DISPLAY_ARGS[@]}" -eq 0 ]]; then
+    if grep -q 'name "virtio-vga"' <<<"$DEV_HELP"; then
+        DISPLAY_ARGS=(-device virtio-vga -display gtk)
+    elif grep -q 'name "virtio-gpu-pci"' <<<"$DEV_HELP"; then
+        DISPLAY_ARGS=(-device virtio-gpu-pci -display gtk)
+    else
+        DISPLAY_ARGS=(-vga std -display gtk)
+    fi
 fi
 
 if [[ ! -f "$ISO_DRIVE" ]]; then
@@ -155,7 +175,50 @@ if [[ "$ISO_MBR_SIG" != "55aa" ]]; then
     exit 1
 fi
 
+TARGET_DISK_DIR="$(dirname "$TARGET_DISK")"
+if [[ ! -d "$TARGET_DISK_DIR" ]] || [[ ! -w "$TARGET_DISK_DIR" ]]; then
+    sudo mkdir -p "$TARGET_DISK_DIR"
+    sudo chown "${USER}:$(id -gn)" "$TARGET_DISK_DIR"
+fi
+
+DISK_FORMAT="qcow2"
+EXPECTED_DISK_BYTES="$(( DISK_SIZE_GIB * 1073741824 ))"
+NEED_CREATE_DISK="false"
+if [[ ! -f "$TARGET_DISK" || "$RESET_VARS" == "true" ]]; then
+    NEED_CREATE_DISK="true"
+else
+    read -r DISK_FORMAT EXISTING_DISK_BYTES < <(python3 -c '
+import os, struct, sys
+p = sys.argv[1]
+try:
+    with open(p, "rb") as f:
+        hdr = f.read(32)
+    if len(hdr) >= 32 and hdr[:4] == b"QFI\xfb":
+        vsize = struct.unpack(">Q", hdr[24:32])[0]
+        print(f"qcow2 {vsize}")
+    else:
+        print(f"raw {os.path.getsize(p)}")
+except Exception:
+    print("unknown 0")
+' "$TARGET_DISK" 2>/dev/null || echo "unknown 0")
+    if [[ "$EXISTING_DISK_BYTES" != "$EXPECTED_DISK_BYTES" ]]; then
+        NEED_CREATE_DISK="true"
+    fi
+fi
+
+if [[ "$NEED_CREATE_DISK" == "true" ]]; then
+    rm -f "$TARGET_DISK"
+    if command -v qemu-img >/dev/null 2>&1; then
+        DISK_FORMAT="qcow2"
+        qemu-img create -f qcow2 "$TARGET_DISK" "${DISK_SIZE_GIB}G" >/dev/null
+    else
+        DISK_FORMAT="raw"
+        truncate -s "${DISK_SIZE_GIB}G" "$TARGET_DISK"
+    fi
+fi
+
 echo "==> Launching NovOS Live ISO (${ISO_DRIVE}) in QEMU/KVM UEFI..."
+echo "    Target Disk: ${TARGET_DISK} (${DISK_SIZE_GIB} GiB, ${DISK_FORMAT})"
 echo "    SSH Forward: ssh -p 2222 ${DEFAULT_USER}@localhost"
 
 exec qemu-system-x86_64 \
@@ -166,6 +229,7 @@ exec qemu-system-x86_64 \
     -m "$RAM_MB" \
     "${UEFI_ARGS[@]}" \
     -cdrom "$ISO_DRIVE" \
+    -drive "file=${TARGET_DISK},if=virtio,format=${DISK_FORMAT},discard=unmap" \
     -global ide-cd.bootindex=1 \
     -boot order=d,menu=on \
     "${DISPLAY_ARGS[@]}" \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Stage 5 (Inside Chroot): Modular Profile Provisioner (novos-setup)
-# Profiles: Gaming | Dev & Antigravity | Local AI / ComfyUI / LLM | Network & Samba
+# Stage 5 (Inside Chroot): Modular Profile Provisioner (novos-setup),
+# Custom-Tools Integration (novos-custom-tools) & DevSecOps Kali Box (novos-sec-box)
 # ==============================================================================
 set -euo pipefail
 
@@ -11,8 +11,10 @@ export DEBIAN_FRONTEND=noninteractive
 source /root/novos-build/config/build.env
 source /root/novos-build/scripts/lib/verify-deps.sh
 
+REPO_ROOT="/root/novos-build"
+
 echo "==> [Stage 5.1] Configuring Anti-Bloat LLM & Developer Environment Paths..."
-mkdir -p /srv/llm/{ollama,huggingface,comfyui,open-webui,models} /srv/devshare
+mkdir -p /srv/llm/{ollama,huggingface,comfyui,open-webui,models} /srv/devshare /etc/novos /etc/novos/custom-tools /usr/share/novos/custom-tools
 ln -sfn /srv/llm/ollama /var/lib/ollama
 chown -R "${DEFAULT_USER}:${DEFAULT_USER}" /srv/llm /srv/devshare
 chmod 2775 /srv/llm /srv/devshare
@@ -24,6 +26,123 @@ export OLLAMA_MODELS="/srv/llm/ollama/models"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.ghcup/bin:/usr/local/sbin:/usr/local/bin:$PATH"
 EOF
 chmod +x /etc/profile.d/novos-env.sh
+
+echo "==> [Stage 5.1b] Provisioning novos-custom-tools Binary & /etc/novos/custom-tools.yaml..."
+if ! ([[ -x "${REPO_ROOT}/target/release/novos-custom-tools" && -x "${REPO_ROOT}/target/release/novos-slippery-tiles" ]] && \
+      "${REPO_ROOT}/target/release/novos-custom-tools" --help >/dev/null 2>&1 && \
+      "${REPO_ROOT}/target/release/novos-slippery-tiles" --help >/dev/null 2>&1); then
+    if ! command -v cargo >/dev/null 2>&1; then
+        apt-get update
+        apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y cargo rustc
+    fi
+    cargo build --release --offline --manifest-path "${REPO_ROOT}/Cargo.toml" || \
+        cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml"
+fi
+
+install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" /usr/local/bin/novos-custom-tools
+install -m 0755 "${REPO_ROOT}/target/release/novos-slippery-tiles" /usr/local/bin/novos-slippery-tiles
+ln -sfn /usr/local/bin/novos-slippery-tiles /usr/local/bin/novos-gtile-overlay
+cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools.yaml
+cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools/manifest.yaml
+cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /usr/share/novos/custom-tools/manifest.yaml
+
+echo "==> [Stage 5.1c] Building Offline APT Marker Repository (/usr/share/novos/apt-markers) for Calamares WiFi/Bluetooth Opt-Out & Batch APT Guarantee..."
+MARKER_REPO="/usr/share/novos/apt-markers"
+MARKER_BUILD_TMP="$(mktemp -d)"
+rm -f /etc/apt/sources.list.d/novos-markers.list /var/lib/apt/lists/*apt-markers* 2>/dev/null || true
+mkdir -p -m 0755 "$MARKER_REPO"
+rm -f "${MARKER_REPO}/"*.deb "${MARKER_REPO}/Packages" "${MARKER_REPO}/Packages.gz" 2>/dev/null || true
+: > "${MARKER_REPO}/Packages"
+
+build_marker_deb() {
+    local pkg_name="$1"
+    local pkg_ver="$2"
+    local pkg_desc="$3"
+    local pkg_dir="${MARKER_BUILD_TMP}/${pkg_name}"
+    mkdir -p "${pkg_dir}/DEBIAN" "${pkg_dir}/usr/share/novos/markers"
+    printf 'enabled\n' > "${pkg_dir}/usr/share/novos/markers/${pkg_name}"
+    cat <<CTRL > "${pkg_dir}/DEBIAN/control"
+Package: ${pkg_name}
+Version: ${pkg_ver}
+Section: metapackages
+Priority: optional
+Architecture: all
+Maintainer: NovOS Team <dev@novos.local>
+Description: ${pkg_desc}
+CTRL
+    chmod -R 0755 "${pkg_dir}"
+    chmod 0644 "${pkg_dir}/DEBIAN/control" "${pkg_dir}/usr/share/novos/markers/${pkg_name}"
+    local deb_file="${pkg_name}_${pkg_ver}_all.deb"
+    dpkg-deb --root-owner-group --build "${pkg_dir}" "${MARKER_REPO}/${deb_file}" >/dev/null
+    local deb_size deb_md5 deb_sha256
+    deb_size="$(stat -c '%s' "${MARKER_REPO}/${deb_file}")"
+    deb_md5="$(md5sum "${MARKER_REPO}/${deb_file}" | awk '{print $1}')"
+    deb_sha256="$(sha256sum "${MARKER_REPO}/${deb_file}" | awk '{print $1}')"
+    cat <<PKG >> "${MARKER_REPO}/Packages"
+Package: ${pkg_name}
+Version: ${pkg_ver}
+Section: metapackages
+Priority: optional
+Architecture: all
+Maintainer: NovOS Team <dev@novos.local>
+Filename: ./${deb_file}
+Size: ${deb_size}
+MD5sum: ${deb_md5}
+SHA256: ${deb_sha256}
+Description: ${pkg_desc}
+
+PKG
+}
+
+for spec in \
+    "novos-profile-wifi:NovOS Calamares WiFi Profile Selection Marker" \
+    "novos-profile-bluetooth:NovOS Calamares Bluetooth Profile Selection Marker"; do
+    build_marker_deb "${spec%%:*}" "1.0" "${spec#*:}"
+done
+
+# Ensure every package referenced in calamares/modules/netinstall.yaml (including optional/custom-tools
+# packages like ghostty, lazygit, zig, pcsx2, btrfs-assistant, corectrl, goverlay) is resolvable as a
+# native amd64/all package in APT so Calamares' initial batch `apt-get -q -y install ...` never fails
+declare -A SEEN_MARKER_PKGS=(
+    ["novos-profile-wifi"]=1
+    ["novos-profile-bluetooth"]=1
+)
+NETINSTALL_CANDIDATE_PKGS=(ghostty lazygit zig pcsx2 btrfs-assistant corectrl goverlay)
+if [[ -f "${REPO_ROOT}/calamares/modules/netinstall.yaml" ]]; then
+    while IFS= read -r net_pkg; do
+        [[ -n "$net_pkg" ]] && NETINSTALL_CANDIDATE_PKGS+=("$net_pkg")
+    done < <(python3 -c '
+import sys, yaml
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = yaml.safe_load(fh) or []
+for grp in data:
+    for pkg in grp.get("packages", []) or []:
+        print(pkg)
+    for sub in grp.get("subgroups", []) or []:
+        for pkg in sub.get("packages", []) or []:
+            print(pkg)
+' "${REPO_ROOT}/calamares/modules/netinstall.yaml" 2>/dev/null || true)
+fi
+
+for cand_pkg in "${NETINSTALL_CANDIDATE_PKGS[@]}"; do
+    [[ -z "$cand_pkg" || -n "${SEEN_MARKER_PKGS[$cand_pkg]:-}" ]] && continue
+    SEEN_MARKER_PKGS["$cand_pkg"]=1
+    if ! apt-cache show "$cand_pkg" 2>/dev/null | grep -qE '^Architecture:[[:space:]]*(amd64|all)$'; then
+        echo "==> [Stage 5.1c] Package '${cand_pkg}' not found as amd64/all in upstream APT cache; creating fallback marker .deb in ${MARKER_REPO}..."
+        build_marker_deb "$cand_pkg" "0.0.1~novos1" "NovOS Calamares Netinstall Fallback Marker for ${cand_pkg}"
+    fi
+done
+
+gzip -9c "${MARKER_REPO}/Packages" > "${MARKER_REPO}/Packages.gz"
+chmod 0644 "${MARKER_REPO}/"*
+rm -rf "$MARKER_BUILD_TMP"
+
+mkdir -p /etc/apt/sources.list.d
+cat << 'EOF' > /etc/apt/sources.list.d/novos-markers.list
+deb [trusted=yes] file:/usr/share/novos/apt-markers ./
+EOF
+chmod 0644 /etc/apt/sources.list.d/novos-markers.list
+apt-get update -q || true
 
 echo "==> [Stage 5.2] Writing Containerized ComfyUI & Open WebUI Stack (RX 9070 XT RDNA4 Ready)..."
 cat << 'EOF' > /srv/llm/docker-compose.yml
@@ -99,16 +218,137 @@ esac
 EOF
 chmod +x /usr/local/bin/novos-llm-stack
 
+echo "==> [Stage 5.2b] Installing DevSecOps Kali Rolling Container Manager (/usr/local/bin/novos-sec-box)..."
+cat << 'EOF' > /usr/local/bin/novos-sec-box
+#!/usr/bin/env bash
+# ==============================================================================
+# NovOS DevSecOps Kali Rolling Container Manager (Distrobox + Rootless Podman)
+# Usage:
+#   novos-sec-box up              Create/start the kalilinux/kali-rolling container
+#   novos-sec-box enter [cmd...]  Enter interactive shell or execute command inside Kali
+#   novos-sec-box install-top10   Provision Kali Top 10 security & pentesting toolkit
+#   novos-sec-box export <bin>    Export a Kali tool binary to ~/.local/bin on host
+#   novos-sec-box status          Show Distrobox container status
+#   novos-sec-box stop            Stop the Kali Rolling container
+# ==============================================================================
+set -euo pipefail
+
+BOX_NAME="${NOVOS_SEC_BOX_NAME:-novos-kali}"
+BOX_IMAGE="${NOVOS_SEC_BOX_IMAGE:-docker.io/kalilinux/kali-rolling:latest}"
+ACTION="${1:-help}"
+
+ensure_runtime() {
+    if ! command -v distrobox >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
+        echo "[ERROR] 'distrobox' and 'podman' are required for novos-sec-box." >&2
+        echo "        Install them via: sudo novos-setup --install devsecops" >&2
+        exit 1
+    fi
+}
+
+ensure_box_created() {
+    ensure_runtime
+    if ! distrobox list --no-color 2>/dev/null | awk -F'|' 'NR>1 {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' | grep -qx "$BOX_NAME"; then
+        echo "==> [novos-sec-box] Creating Distrobox '${BOX_NAME}' from ${BOX_IMAGE}..."
+        distrobox create --name "$BOX_NAME" --image "$BOX_IMAGE" --yes
+    fi
+}
+
+case "$ACTION" in
+    up|create|init)
+        ensure_box_created
+        echo "==> [novos-sec-box] Initializing '${BOX_NAME}' container..."
+        distrobox enter "$BOX_NAME" -- true
+        echo "[OK]   Kali Rolling box '${BOX_NAME}' is up. Enter with: novos-sec-box enter"
+        ;;
+    enter|shell)
+        ensure_box_created
+        shift || true
+        if [[ $# -gt 0 ]]; then
+            exec distrobox enter "$BOX_NAME" -- "$@"
+        else
+            exec distrobox enter "$BOX_NAME"
+        fi
+        ;;
+    install-top10|top10)
+        ensure_box_created
+        echo "==> [novos-sec-box] Installing Kali Top 10 & offensive security suite inside '${BOX_NAME}'..."
+        distrobox enter "$BOX_NAME" -- bash -c '
+            set -euo pipefail
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                kali-tools-top10 nmap wireshark tshark tcpdump netcat-traditional \
+                john hashcat aircrack-ng hydra sqlmap gobuster ffuf nikto \
+                metasploit-framework radare2 gdb responder impacket-scripts
+        '
+        echo "[OK]   Kali Top 10 toolkit installed in '${BOX_NAME}'."
+        ;;
+    export)
+        ensure_box_created
+        TARGET_BIN="${2:-}"
+        if [[ -z "$TARGET_BIN" ]]; then
+            echo "[ERROR] Usage: novos-sec-box export <binary-name>" >&2
+            exit 1
+        fi
+        mkdir -p "$HOME/.local/bin"
+        distrobox enter "$BOX_NAME" -- bash -c '
+            set -euo pipefail
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+            bin_arg="$1"
+            export_dir="$2"
+            if [[ "$bin_arg" == /* ]]; then
+                bin_path="$bin_arg"
+            else
+                bin_path="$(command -v "$bin_arg" || true)"
+                if [[ -z "$bin_path" ]]; then
+                    bin_path="/usr/bin/${bin_arg}"
+                fi
+            fi
+            distrobox-export --bin "$bin_path" --export-path "$export_dir"
+        ' _ "$TARGET_BIN" "$HOME/.local/bin"
+        echo "[OK]   Exported '${TARGET_BIN}' from '${BOX_NAME}' to $HOME/.local/bin"
+        ;;
+    status|list)
+        ensure_runtime
+        distrobox list
+        ;;
+    stop|down)
+        ensure_runtime
+        distrobox stop --yes "$BOX_NAME"
+        ;;
+    --help|-h|help|*)
+        cat << 'HELP_EOF'
+Usage: novos-sec-box <command> [args...]
+
+Commands:
+  up              Create and initialize the kalilinux/kali-rolling Distrobox container
+  enter [cmd...]  Enter the Kali Rolling environment (or run a command inside it)
+  install-top10   Install Kali Top 10 security tools inside the container
+  export <bin>    Export a binary from the Kali container to ~/.local/bin on the host
+  status          Display Distrobox container status
+  stop            Stop the Kali Rolling container
+HELP_EOF
+        if [[ "$ACTION" != "--help" && "$ACTION" != "-h" && "$ACTION" != "help" ]]; then
+            exit 1
+        fi
+        ;;
+esac
+EOF
+chmod +x /usr/local/bin/novos-sec-box
+
 echo "==> [Stage 5.3] Installing Modular Profile Manager (/usr/local/bin/novos-setup)..."
 cat << 'EOF' > /usr/local/bin/novos-setup
 #!/usr/bin/env bash
 # ==============================================================================
 # NovOS Modular Software Profile Installer (TUI, CLI & Calamares Post-Install)
-# Profiles: gaming, dev, llm, network, browsers, media, utilities
+# Profiles: wifi, bluetooth, no-wifi, no-bluetooth, gaming, dev, devsecops,
+#           llm, network, comms (or browsers), media, utilities
 # Usage:
 #   Interactive TUI:   sudo novos-setup
-#   CLI Profiles:      sudo novos-setup --install gaming,dev,llm,network,browsers,media,utilities --user devuser
+#   CLI Profiles:      sudo novos-setup --install wifi,bluetooth,gaming,dev,devsecops,llm,network,comms,media,utilities --user devuser
+#   Hardware Opt-Out:  sudo novos-setup --install no-wifi,no-bluetooth
+#   Custom Tools:      sudo novos-setup --custom-tools
 #   Granular APT:      sudo novos-setup --packages fastfetch,tmux,ripgrep --user devuser
+#   Calamares Pre-Pkg: sudo novos-setup --pre-packages
 #   Calamares Hook:    sudo novos-setup --post-calamares --user devuser
 # ==============================================================================
 set -euo pipefail
@@ -121,9 +361,20 @@ TARGET_USER="${SUDO_USER:-}"
 USER_SPECIFIED="false"
 SELECTED_PROFILES=""
 SELECTED_PACKAGES=""
+PRE_PACKAGES_MODE="false"
 POST_CALAMARES="false"
+RUN_CUSTOM_TOOLS="false"
 INTERACTIVE="true"
 APT_UPDATED="false"
+
+append_profile() {
+    local p="$1"
+    if [[ -z "$SELECTED_PROFILES" ]]; then
+        SELECTED_PROFILES="$p"
+    else
+        SELECTED_PROFILES="${SELECTED_PROFILES},${p}"
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -132,7 +383,7 @@ while [[ $# -gt 0 ]]; do
                 echo "[ERROR] Option $1 requires a profile list argument." >&2
                 exit 1
             fi
-            SELECTED_PROFILES="${2:-}"
+            append_profile "${2:-}"
             INTERACTIVE="false"
             shift 2
             ;;
@@ -144,6 +395,36 @@ while [[ $# -gt 0 ]]; do
             SELECTED_PACKAGES="${2:-}"
             INTERACTIVE="false"
             shift 2
+            ;;
+        --custom-tools)
+            RUN_CUSTOM_TOOLS="true"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --wifi)
+            append_profile "wifi"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --no-wifi)
+            append_profile "no-wifi"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --bluetooth)
+            append_profile "bluetooth"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --no-bluetooth)
+            append_profile "no-bluetooth"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --pre-packages)
+            PRE_PACKAGES_MODE="true"
+            INTERACTIVE="false"
+            shift
             ;;
         --post-calamares)
             POST_CALAMARES="true"
@@ -164,11 +445,16 @@ while [[ $# -gt 0 ]]; do
 Usage: sudo novos-setup [OPTIONS]
 
 Options:
-  --install, -i <profiles>   Comma-separated profiles to install:
-                             gaming,dev,llm,network,browsers,media,utilities (or 'all')
+  --install, -i <profiles>   Comma-separated profiles to install or apply:
+                             wifi,bluetooth,no-wifi,no-bluetooth,gaming,dev,devsecops,
+                             llm,network,comms,browsers,media,utilities (or 'all')
   --packages, -p <pkgs>      Comma-separated list of individual APT packages to install safely
-  --post-calamares           Detect Calamares netinstall marker packages and configure
-                             Flathub gaming apps, Rust/uv, Ollama/ComfyUI (/srv/llm), and Samba [DevShare]
+  --custom-tools             Build and install enabled tools from /etc/novos/custom-tools.yaml
+  --wifi / --no-wifi         Opt-in (install/enable) or opt-out (purge/disable) WiFi stack & firmware
+  --bluetooth / --no-bluetooth Opt-in (install/enable) or opt-out (purge/mask) Bluetooth stack
+  --pre-packages             Prepare Calamares target chroot before APT packages module runs
+  --post-calamares           Apply Calamares netinstall selections, WiFi/Bluetooth opt-outs,
+                             Flathub apps, Rust/uv, Ollama/ComfyUI (/srv/llm), and Samba [DevShare]
   --user, -u <username>      Target non-root user to configure (default: primary regular user)
   --help, -h                 Show this help message
 HELP_EOF
@@ -182,16 +468,76 @@ done
 
 if [[ "$EUID" -ne 0 ]]; then
     echo "Elevating privileges with sudo..."
-    if [[ "$USER_SPECIFIED" == "true" ]]; then
+    if [[ "$USER_SPECIFIED" == "true" || "$PRE_PACKAGES_MODE" == "true" ]]; then
         exec sudo -E "$0" "${ORIG_ARGS[@]}"
     else
         exec sudo -E "$0" --user "${USER:-devuser}" "${ORIG_ARGS[@]}"
     fi
 fi
 
-# Resolve target user; prefer explicit --user or SUDO_USER if valid, else latest regular user (UID 1000-59999)
-if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]] || ! id "$TARGET_USER" >/dev/null 2>&1; then
-    DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {u=$1} END {print u}' /etc/passwd || true)"
+if [[ "$PRE_PACKAGES_MODE" == "true" ]]; then
+    echo "==> [Pre-Packages] Preparing Calamares target chroot for APT package installation..."
+    mkdir -p /dev /dev/pts /dev/shm /run/udev /usr/sbin /etc/apt/apt.conf.d
+    chmod 1777 /dev/shm
+    for devspec in 'null:1:3' 'zero:1:5' 'full:1:7' 'random:1:8' 'urandom:1:9' 'tty:5:0'; do
+        dev_name="${devspec%%:*}"
+        dev_rest="${devspec#*:}"
+        dev_maj="${dev_rest%%:*}"
+        dev_min="${dev_rest#*:}"
+        if [[ ! -c "/dev/${dev_name}" ]]; then
+            rm -f "/dev/${dev_name}"
+            mknod -m 666 "/dev/${dev_name}" c "$dev_maj" "$dev_min"
+        fi
+        chmod 0666 "/dev/${dev_name}" 2>/dev/null || true
+    done
+    mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=0666 || true
+    if [[ ! -c /dev/ptmx ]]; then
+        rm -f /dev/ptmx
+        if [[ -c /dev/pts/ptmx ]]; then
+            ln -sf pts/ptmx /dev/ptmx
+        else
+            mknod -m 666 /dev/ptmx c 5 2
+        fi
+    fi
+    chmod 0666 /dev/ptmx /dev/pts/ptmx 2>/dev/null || true
+
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+    chmod 0755 /usr/sbin/policy-rc.d
+
+    if [[ -f /usr/sbin/aspell-autobuildhash ]] && ! grep -q 'sub subst' /usr/sbin/aspell-autobuildhash; then
+        perl -0777 -i -pe 'my $g = "sub subst { my (\$s) = \@_; return defined(\$s) ? \$s : \"\"; }\nif ( ! -c \"/dev/null\" ) { unlink(\"/dev/null\"); system(\"mknod\", \"-m\", \"666\", \"/dev/null\", \"c\", \"1\", \"3\"); }\n"; if (!s/\A(#![^\n]*\n)/$1$g/) { $_ = $g . $_; }' /usr/sbin/aspell-autobuildhash
+        chmod 0755 /usr/sbin/aspell-autobuildhash
+    fi
+
+    if ! grep -q -- '--force-confdef' /etc/apt/apt.conf.d/01-novos-safety 2>/dev/null; then
+        printf 'DPkg::Options {\n  "--force-confdef";\n  "--force-confold";\n};\n' >> /etc/apt/apt.conf.d/01-novos-safety
+    fi
+
+    if command -v debconf-set-selections >/dev/null 2>&1; then
+        printf 'debconf debconf/frontend select Noninteractive\ndebconf debconf/priority select critical\nwireshark-common wireshark-common/install-setuid boolean true\nsamba-common samba-common/workgroup string WORKGROUP\nsamba-common samba-common/dhcp boolean false\nsamba-common samba-common/do_debconf boolean true\n' | debconf-set-selections || true
+    fi
+
+    if [[ ! -s /etc/resolv.conf ]] || ! grep -qE '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null; then
+        rm -f /etc/resolv.conf
+        if [[ -s /run/systemd/resolve/resolv.conf ]]; then
+            cp -fL /run/systemd/resolve/resolv.conf /etc/resolv.conf
+        else
+            echo 'nameserver 1.1.1.1' > /etc/resolv.conf
+            echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
+        fi
+    fi
+
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
+    DEBIAN_FRONTEND=noninteractive apt-get update -q || true
+    exit 0
+fi
+
+# Resolve target user; prefer explicit --user or SUDO_USER if valid, else primary non-devuser regular user (UID 1000-59999)
+if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" || "$TARGET_USER" == @@* ]] || ! id -u "$TARGET_USER" >/dev/null 2>&1; then
+    DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 && $1 != "devuser" {u=$1; exit} END {print u}' /etc/passwd || true)"
+    if [[ -z "$DETECTED_USER" ]]; then
+        DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {u=$1} END {print u}' /etc/passwd || true)"
+    fi
     if [[ -n "$DETECTED_USER" ]]; then
         TARGET_USER="$DETECTED_USER"
     else
@@ -244,7 +590,7 @@ safe_apt_install() {
     local pkg
     for pkg in "$@"; do
         [[ -z "$pkg" ]] && continue
-        if apt-cache show "$pkg" >/dev/null 2>&1; then
+        if apt-cache show "$pkg" 2>/dev/null | grep -q '^Package:'; then
             available_pkgs+=("$pkg")
         else
             echo "[WARN] Optional/requested package '${pkg}' not found in APT cache; skipping." >&2
@@ -252,9 +598,25 @@ safe_apt_install() {
     done
 
     if [[ "${#available_pkgs[@]}" -gt 0 ]]; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove "${available_pkgs[@]}"
+        DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y "${available_pkgs[@]}"
     else
         echo "[WARN] No installable packages matched in current batch." >&2
+    fi
+}
+
+safe_apt_purge() {
+    local installed_pkgs=()
+    local pkg
+    for pkg in "$@"; do
+        [[ -z "$pkg" ]] && continue
+        if is_pkg_installed "$pkg"; then
+            installed_pkgs+=("$pkg")
+        fi
+    done
+
+    if [[ "${#installed_pkgs[@]}" -gt 0 ]]; then
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed_pkgs[@]}" 2>/dev/null || \
+            dpkg --purge --force-depends "${installed_pkgs[@]}" 2>/dev/null || true
     fi
 }
 
@@ -279,28 +641,38 @@ verify_profile_deps() {
     local services=()
 
     case "$profile" in
+        wifi)
+            bins=(iw rfkill wpa_supplicant)
+            ;;
+        bluetooth)
+            bins=(bluetoothctl blueman-manager)
+            services=(bluetooth)
+            ;;
         gaming)
-            bins=(gamemoded gamescope mangohud lutris wine flatpak)
+            bins=(gamemoded gamescope mangohud lutris wine retroarch flatpak)
             ;;
         dev)
-            bins=(docker python3 clang cmake ninja ghc cabal)
+            bins=(docker podman distrobox python3 clang cmake ninja ghc cabal)
             services=(docker)
+            ;;
+        devsecops)
+            bins=(nmap tshark tcpdump john hashcat aircrack-ng sqlmap gobuster radare2 gdb ufw distrobox podman novos-sec-box)
             ;;
         llm)
             bins=(docker nvtop btop novos-llm-stack)
             ;;
         network)
-            bins=(smbd sshd wg remmina)
+            bins=(smbd sshd wg remmina syncthing rclone)
             services=(smbd ssh)
             ;;
-        browsers)
-            bins=(firefox-esr chromium)
+        comms|browsers)
+            bins=(firefox-esr chromium thunderbird)
             ;;
         media)
-            bins=(vlc mpv obs kdenlive gimp inkscape blender)
+            bins=(vlc mpv obs kdenlive gimp inkscape krita darktable blender freecad audacity ardour)
             ;;
         utilities)
-            bins=(libreoffice fastfetch gparted keepassxc tmux rg fdfind)
+            bins=(libreoffice fastfetch gparted keepassxc tmux rg fdfind timeshift btrfs-assistant)
             ;;
         *)
             return 0
@@ -309,7 +681,7 @@ verify_profile_deps() {
 
     local bin
     for bin in "${bins[@]}"; do
-        if command -v "$bin" >/dev/null 2>&1 || [[ -x "/usr/sbin/${bin}" || -x "/usr/local/bin/${bin}" ]]; then
+        if command -v "$bin" >/dev/null 2>&1 || [[ -x "/usr/sbin/${bin}" || -x "/usr/local/bin/${bin}" || -x "/usr/libexec/iwd" ]]; then
             echo "[OK]   [Profile: ${profile}] Verified binary: ${bin}"
         else
             echo "[WARN] [Profile: ${profile}] Binary not present (optional or skipped): ${bin}" >&2
@@ -349,20 +721,29 @@ verify_profile_deps() {
 }
 
 # ------------------------------------------------------------------------------
-# Interactive Whiptail Menu (All 7 Categories from netinstall.yaml)
+# Interactive Whiptail Menu (All 10 Categories from netinstall.yaml)
 # ------------------------------------------------------------------------------
 if [[ "$INTERACTIVE" == "true" ]]; then
     CHOICES=$(whiptail --title "NovOS Profile Setup" \
-        --checklist "Select the software profiles to install (Space to toggle, Enter to confirm):" 22 92 10 \
-        "gaming"    "Steam, Lutris, Heroic, ProtonPlus, Bottles, Gamescope, MangoHud" ON \
-        "dev"       "Antigravity/agy, VS Code, Docker, Rust, uv, Haskell, alien/AppImage" ON \
+        --checklist "Select the software & hardware profiles to install (Space to toggle, Enter to confirm):" 24 96 12 \
+        "wifi"      "Wireless & WiFi Connectivity Stack (iwd, wpasupplicant, WiFi firmware)" ON \
+        "bluetooth" "Bluetooth Audio & Peripherals Stack (BlueZ, Blueman, PipeWire SPA)" ON \
+        "gaming"    "Steam, Lutris, Heroic, Bottles, RPCS3, RetroArch, Dolphin, PCSX2" ON \
+        "dev"       "Antigravity/agy, VS Code, Neovim, Helix, Docker, Podman, Distrobox, KVM" ON \
+        "devsecops" "Nmap, Wireshark, Hashcat, Aircrack-ng, Radare2 & Kali Box (novos-sec-box)" OFF \
         "llm"       "Ollama, llama.cpp, ComfyUI & Open WebUI (Docker), HuggingFace CLI" ON \
-        "network"   "Samba (DevShare), Remmina (RDP/VNC), Tailscale, WireGuard, SSH" ON \
-        "browsers"  "Firefox ESR and Chromium Web Browsers" OFF \
-        "media"     "VLC, mpv, OBS Studio, Kdenlive, GIMP, Inkscape, Blender" OFF \
-        "utilities" "LibreOffice, Fastfetch, GParted, KeePassXC, tmux, ripgrep, fd-find" OFF \
+        "network"   "Samba (DevShare), Remmina, Tailscale, WireGuard, Syncthing, Rclone, SSH" ON \
+        "comms"     "Firefox ESR, Chromium, Thunderbird, Brave, LibreWolf, Discord, Signal" OFF \
+        "media"     "VLC, mpv, OBS, Kdenlive, GIMP, Krita, Darktable, Blender, Ardour, FreeCAD" OFF \
+        "utilities" "LibreOffice, Timeshift, Btrfs Assistant, GParted, KeePassXC, Mission Center" OFF \
         3>&1 1>&2 2>&3) || exit 0
     SELECTED_PROFILES="$(echo "$CHOICES" | tr -d '"' | tr ' ' ',')"
+    if [[ ",${SELECTED_PROFILES}," != *",wifi,"* ]]; then
+        append_profile "no-wifi"
+    fi
+    if [[ ",${SELECTED_PROFILES}," != *",bluetooth,"* ]]; then
+        append_profile "no-bluetooth"
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -370,11 +751,11 @@ fi
 # ------------------------------------------------------------------------------
 configure_gaming_flathub() {
     echo "==> [Gaming] Configuring gaming groups, permissions & Flathub..."
-    for grp in gamemode render video input audio; do
+    for grp in gamemode render video input audio plugdev; do
         groupadd -f "$grp" 2>/dev/null || true
     done
     if id "$TARGET_USER" >/dev/null 2>&1; then
-        for grp in gamemode render video input audio; do
+        for grp in gamemode render video input audio plugdev; do
             getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" || true
         done
     fi
@@ -394,19 +775,21 @@ configure_gaming_flathub() {
             com.heroicgameslauncher.hgl \
             com.vysp3r.ProtonPlus \
             com.github.Matoking.protontricks \
-            com.usebottles.bottles || true
+            com.usebottles.bottles \
+            net.rpcs3.RPCS3 || true
 
         if [[ -d "/mnt/raid0" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.valvesoftware.Steam || true
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.heroicgameslauncher.hgl || true
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.github.Matoking.protontricks || true
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.usebottles.bottles || true
+            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 net.rpcs3.RPCS3 || true
         fi
     fi
 }
 
 configure_dev_runtime() {
-    echo "==> [Dev] Configuring Docker/libvirt services, user groups, Rust (rustup) & Astral uv..."
+    echo "==> [Dev] Configuring Docker/Podman/libvirt services, user groups, Rust (rustup) & Astral uv..."
     for grp in docker libvirt kvm video render input audio; do
         groupadd -f "$grp" 2>/dev/null || true
     done
@@ -442,6 +825,20 @@ configure_dev_runtime() {
             fi
         ' || true
     fi
+}
+
+configure_devsecops_runtime() {
+    echo "==> [DevSecOps] Configuring wireshark/pcap permissions & Kali Rolling box (novos-sec-box)..."
+    groupadd -f wireshark 2>/dev/null || true
+    if id "$TARGET_USER" >/dev/null 2>&1; then
+        getent group wireshark >/dev/null 2>&1 && usermod -aG wireshark "$TARGET_USER" || true
+    fi
+    if [[ -x /usr/bin/dumpcap ]]; then
+        chgrp wireshark /usr/bin/dumpcap 2>/dev/null || true
+        chmod 0750 /usr/bin/dumpcap 2>/dev/null || true
+        setcap cap_net_raw,cap_net_admin=eip /usr/bin/dumpcap 2>/dev/null || true
+    fi
+    echo "==> [DevSecOps] Kali Rolling Distrobox ready! Run: novos-sec-box up && novos-sec-box enter"
 }
 
 configure_llm_runtime() {
@@ -556,7 +953,7 @@ OLLAMA_EOF
 }
 
 configure_network_runtime() {
-    echo "==> [Network] Configuring Samba [DevShare], Tailscale & Remote Services..."
+    echo "==> [Network] Configuring Samba [DevShare], Tailscale, Syncthing & Remote Services..."
     for grp in sambashare; do
         groupadd -f "$grp" 2>/dev/null || true
     done
@@ -596,89 +993,238 @@ SMB_EOF
     systemctl enable smbd nmbd ssh 2>/dev/null || true
 }
 
+configure_comms_flathub() {
+    if [[ "$POST_CALAMARES" == "true" ]]; then
+        echo "==> [Comms] Post-Calamares offline mode: skipping online Flathub browser/comms downloads."
+        return 0
+    fi
+    if ! command -v flatpak >/dev/null 2>&1; then
+        safe_apt_install flatpak
+    fi
+    if command -v flatpak >/dev/null 2>&1; then
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+        flatpak install -y flathub \
+            com.brave.Browser \
+            io.gitlab.librewolf-community \
+            app.zen_browser.zen \
+            com.discordapp.Discord \
+            dev.vencord.Vesktop \
+            org.signal.Signal \
+            im.riot.Riot || true
+    fi
+}
+
+configure_utilities_flathub() {
+    if [[ "$POST_CALAMARES" == "true" ]]; then
+        echo "==> [Utilities] Post-Calamares offline mode: skipping online Flathub utility downloads."
+        return 0
+    fi
+    if ! command -v flatpak >/dev/null 2>&1; then
+        safe_apt_install flatpak
+    fi
+    if command -v flatpak >/dev/null 2>&1; then
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+        flatpak install -y flathub \
+            io.missioncenter.MissionCenter \
+            org.localsend.localsend_app \
+            com.bitwarden.desktop || true
+    fi
+}
+
 # ------------------------------------------------------------------------------
-# Profile Installers (All 7 Categories)
+# Profile Installers & Hardware Opt-In/Out Handlers
 # ------------------------------------------------------------------------------
-install_gaming_profile() {
-    echo "==> [Profile: Gaming] Installing Gaming Stack (APT + Flathub)..."
+install_wifi_profile() {
+    echo "==> [Profile: WiFi] Enabling & installing Wireless Connectivity Stack + Firmware..."
+    rm -f /etc/novos/no-wifi /etc/novos/wifi-disabled
+    systemctl unmask wpa_supplicant.service iwd.service 2>/dev/null || true
     safe_apt_install \
-        gamemode gamescope mangohud goverlay lutris vulkan-tools \
-        wine wine64 wine32:i386 libwine:i386 winetricks flatpak
+        novos-profile-wifi \
+        iwd wpasupplicant wireless-regdb iw rfkill \
+        firmware-iwlwifi firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+    verify_profile_deps wifi
+}
+
+install_no_wifi_profile() {
+    echo "==> [Profile: No-WiFi] Opting out of Wireless Stack: disabling services & purging WiFi firmware..."
+    mkdir -p /etc/novos
+    touch /etc/novos/no-wifi
+    command -v rfkill >/dev/null 2>&1 && rfkill block wifi 2>/dev/null || true
+    systemctl disable --now iwd.service wpa_supplicant.service 2>/dev/null || true
+    systemctl mask iwd.service wpa_supplicant.service 2>/dev/null || true
+    safe_apt_purge \
+        novos-profile-wifi \
+        iwd wpasupplicant wireless-regdb iw \
+        firmware-iwlwifi firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211
+}
+
+install_bluetooth_profile() {
+    echo "==> [Profile: Bluetooth] Enabling & installing Bluetooth Audio & Peripherals Stack..."
+    rm -f /etc/novos/no-bluetooth /etc/novos/bluetooth-disabled
+    systemctl unmask bluetooth.service 2>/dev/null || true
+    safe_apt_install \
+        novos-profile-bluetooth \
+        bluez bluez-obexd blueman libspa-0.2-bluetooth
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock bluetooth 2>/dev/null || true
+    if [[ "$POST_CALAMARES" == "true" ]] || systemd-detect-virt --chroot >/dev/null 2>&1; then
+        systemctl enable bluetooth.service 2>/dev/null || true
+    else
+        systemctl enable --now bluetooth.service 2>/dev/null || true
+    fi
+    verify_profile_deps bluetooth
+}
+
+install_no_bluetooth_profile() {
+    echo "==> [Profile: No-Bluetooth] Opting out of Bluetooth Stack: masking bluetooth.service & purging packages..."
+    mkdir -p /etc/novos
+    touch /etc/novos/no-bluetooth
+    command -v rfkill >/dev/null 2>&1 && rfkill block bluetooth 2>/dev/null || true
+    systemctl disable --now bluetooth.service 2>/dev/null || true
+    systemctl mask bluetooth.service 2>/dev/null || true
+    safe_apt_purge \
+        novos-profile-bluetooth \
+        bluez bluez-obexd blueman
+}
+
+install_gaming_profile() {
+    echo "==> [Profile: Gaming] Installing Gaming & Emulation Suite (APT + Flathub)..."
+    safe_apt_install \
+        gamemode gamescope mangohud goverlay vulkan-tools \
+        lutris wine wine64 wine32:i386 libwine:i386 winetricks \
+        retroarch dolphin-emu pcsx2 openrgb corectrl flatpak
     configure_gaming_flathub
     verify_profile_deps gaming
 }
 
 install_dev_profile() {
-    echo "==> [Profile: Dev] Installing Docker, VS Code, Antigravity, Haskell, Rust, Python (uv) & Packaging Tools..."
+    echo "==> [Profile: Dev] Installing Antigravity, Editors, Docker/Podman/Distrobox, KVM & Polyglot Toolchains..."
     safe_apt_install \
         docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        code antigravity antigravity-cli \
+        podman buildah skopeo distrobox \
+        qemu-system-x86 libvirt-daemon-system virt-manager \
+        code neovim hx antigravity \
         python3 python3-pip python3-venv python3-dev python3-full \
         pkg-config libssl-dev libudev-dev clang lld llvm cmake ninja-build \
-        ghc cabal-install haskell-stack \
-        alien rpm2cpio cpio patchelf desktop-file-utils squashfs-tools zsync strace fakeroot \
-        ghostty alacritty
+        ghc cabal-install haskell-stack nodejs npm golang-go zig \
+        gh lazygit alacritty ghostty \
+        alien rpm2cpio cpio patchelf desktop-file-utils squashfs-tools zsync strace fakeroot
     configure_dev_runtime
     verify_profile_deps dev
+}
+
+install_devsecops_profile() {
+    echo "==> [Profile: DevSecOps] Installing Pentesting Suite, Firewalls & Kali Rolling Box (novos-sec-box)..."
+    safe_apt_install \
+        nmap wireshark tshark tcpdump netcat-openbsd \
+        john hashcat aircrack-ng hydra \
+        sqlmap gobuster radare2 gdb \
+        ufw firewalld distrobox podman
+    configure_devsecops_runtime
+    verify_profile_deps devsecops
 }
 
 install_llm_profile() {
     echo "==> [Profile: Local AI / LLM] Installing Ollama, llama.cpp, Hugging Face CLI, GPU Monitors & ComfyUI Stack..."
     safe_apt_install \
-        nvtop radeontop btop rocm-smi libcurl4-openssl-dev libvulkan-dev glslc
+        nvtop radeontop btop rocm-smi libcurl4-openssl-dev libvulkan-dev glslang-tools spirv-tools glslc
     configure_llm_runtime
     verify_profile_deps llm
 }
 
 install_network_profile() {
-    echo "==> [Profile: Network / Remote] Installing Samba (DevShare), Remmina, WireGuard, Tailscale & SSH..."
+    echo "==> [Profile: Network / Remote] Installing Samba (DevShare), Remmina, WireGuard, Tailscale, Syncthing & SSH..."
     safe_apt_install \
         remmina remmina-plugin-rdp remmina-plugin-vnc \
-        samba smbclient cifs-utils wireguard-tools openssh-server
+        samba smbclient cifs-utils wireguard-tools openssh-server tailscale syncthing rclone
     configure_network_runtime
     verify_profile_deps network
 }
 
-install_browsers_profile() {
-    echo "==> [Profile: Browsers] Installing Web Browsers (Firefox ESR & Chromium)..."
+install_comms_profile() {
+    echo "==> [Profile: Browsers, Email & Comms] Installing Firefox ESR, Chromium, Thunderbird & Flathub Comms..."
     safe_apt_install \
-        firefox-esr chromium
-    verify_profile_deps browsers
+        firefox-esr chromium thunderbird flatpak
+    configure_comms_flathub
+    verify_profile_deps comms
+}
+
+install_browsers_profile() {
+    install_comms_profile
 }
 
 install_media_profile() {
-    echo "==> [Profile: Media & Creative] Installing Media Players, Streaming & Design Suite..."
+    echo "==> [Profile: Media, Pro Audio & Creative] Installing Media Players, DAW, 2D/3D & CAD Suite..."
     safe_apt_install \
-        vlc mpv obs-studio kdenlive gimp inkscape blender
+        vlc mpv handbrake obs-studio kdenlive \
+        gimp inkscape krita darktable \
+        blender freecad \
+        audacity ardour pipewire-jack
     verify_profile_deps media
 }
 
 install_utilities_profile() {
-    echo "==> [Profile: Utilities & Office] Installing LibreOffice & Workstation Utilities..."
+    echo "==> [Profile: System Admin, Btrfs & Office] Installing LibreOffice, Btrfs Tools & Workstation Utilities..."
     safe_apt_install \
-        libreoffice fastfetch gparted keepassxc tmux ripgrep fd-find
+        libreoffice fastfetch gparted keepassxc tmux ripgrep fd-find \
+        timeshift btrfs-assistant flatpak
+    configure_utilities_flathub
     verify_profile_deps utilities
 }
 
+install_custom_tools_profile() {
+    echo "==> [Custom Tools] Running novos-custom-tools --manifest /etc/novos/custom-tools.yaml --install-enabled..."
+    if [[ -x /usr/local/bin/novos-custom-tools && -f /etc/novos/custom-tools.yaml ]]; then
+        /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --install-enabled
+    else
+        echo "[WARN] /usr/local/bin/novos-custom-tools or /etc/novos/custom-tools.yaml not found." >&2
+    fi
+}
+
 run_post_calamares() {
-    echo "==> [Post-Calamares] Detecting netinstall marker packages for user '${TARGET_USER}'..."
+    echo "==> [Post-Calamares] Detecting netinstall marker packages & hardware opt-outs for user '${TARGET_USER}'..."
     if [[ -n "$TARGET_USER" && "$TARGET_USER" != "devuser" ]] && id -u "$TARGET_USER" >/dev/null 2>&1; then
         userdel -r -f devuser 2>/dev/null || deluser --remove-home devuser 2>/dev/null || true
         groupdel devuser 2>/dev/null || true
-        rm -rf /home/devuser /var/spool/mail/devuser /var/lib/AccountsService/users/devuser /var/lib/AccountsService/icons/devuser
+        rm -rf /home/devuser /var/spool/mail/devuser /var/lib/AccountsService/users/devuser /var/lib/AccountsService/icons/devuser 2>/dev/null || true
     fi
     if id -u "$TARGET_USER" >/dev/null 2>&1; then
         chown -R "${TARGET_USER}:${TARGET_USER}" /srv/llm /srv/devshare 2>/dev/null || true
     fi
-    if any_pkg_installed steam-installer lutris mangohud vkbasalt goverlay gamescope wine winetricks retroarch dolphin-emu ppsspp; then
+
+    # 1. Check WiFi opt-out state (explicit opt-out marker or deselected wireless stack marker package)
+    if [[ -f /etc/novos/no-wifi || -f /etc/novos/wifi-disabled || "${NOVOS_NO_WIFI:-0}" == "1" ]] || \
+       ! is_pkg_installed novos-profile-wifi || \
+       ! any_pkg_installed iwd wpasupplicant; then
+        install_no_wifi_profile
+    else
+        verify_profile_deps wifi
+    fi
+
+    # 2. Check Bluetooth opt-out state (explicit opt-out marker or deselected bluetooth stack marker package)
+    if [[ -f /etc/novos/no-bluetooth || -f /etc/novos/bluetooth-disabled || "${NOVOS_NO_BLUETOOTH:-0}" == "1" ]] || \
+       ! is_pkg_installed novos-profile-bluetooth || \
+       ! any_pkg_installed bluez bluez-obexd blueman; then
+        install_no_bluetooth_profile
+    else
+        systemctl unmask bluetooth.service 2>/dev/null || true
+        systemctl enable bluetooth.service 2>/dev/null || true
+        verify_profile_deps bluetooth
+    fi
+
+    if any_pkg_installed steam-installer lutris mangohud vkbasalt goverlay gamescope wine winetricks retroarch dolphin-emu pcsx2 openrgb corectrl; then
         configure_gaming_flathub
         verify_profile_deps gaming
     fi
-    if any_pkg_installed docker-ce podman buildah skopeo kubectl helm qemu-system-x86 libvirt-daemon-system virt-manager sqlite3 postgresql-client redis-tools code antigravity neovim helix; then
+    if any_pkg_installed docker-ce podman buildah skopeo distrobox qemu-system-x86 libvirt-daemon-system virt-manager code antigravity neovim hx; then
         configure_dev_runtime
         verify_profile_deps dev
     fi
-    if any_pkg_installed python3-venv python3-pip clinfo rocm-smi nvtop; then
+    if any_pkg_installed nmap wireshark tshark john hashcat aircrack-ng hydra sqlmap gobuster radare2 ufw firewalld; then
+        configure_devsecops_runtime
+        verify_profile_deps devsecops
+    fi
+    if any_pkg_installed nvtop btop rocm-smi libcurl4-openssl-dev libvulkan-dev glslang-tools spirv-tools; then
         configure_llm_runtime
         verify_profile_deps llm
     fi
@@ -686,13 +1232,15 @@ run_post_calamares() {
         configure_network_runtime
         verify_profile_deps network
     fi
-    if any_pkg_installed firefox-esr chromium; then
-        verify_profile_deps browsers
+    if any_pkg_installed firefox-esr chromium thunderbird; then
+        configure_comms_flathub
+        verify_profile_deps comms
     fi
-    if any_pkg_installed vlc mpv obs-studio kdenlive gimp inkscape blender; then
+    if any_pkg_installed vlc mpv handbrake obs-studio kdenlive gimp inkscape krita darktable blender freecad audacity ardour pipewire-jack; then
         verify_profile_deps media
     fi
-    if any_pkg_installed libreoffice fastfetch gparted keepassxc tmux ripgrep fd-find; then
+    if any_pkg_installed libreoffice fastfetch gparted keepassxc tmux ripgrep fd-find timeshift btrfs-assistant; then
+        configure_utilities_flathub
         verify_profile_deps utilities
     fi
 }
@@ -710,26 +1258,40 @@ if [[ -n "$SELECTED_PROFILES" ]]; then
     IFS=', ' read -ra PROFILES <<< "$SELECTED_PROFILES"
     for prof in "${PROFILES[@]}"; do
         case "$prof" in
-            gaming)    install_gaming_profile ;;
-            dev)       install_dev_profile ;;
-            llm)       install_llm_profile ;;
-            network)   install_network_profile ;;
-            browsers)  install_browsers_profile ;;
-            media)     install_media_profile ;;
-            utilities) install_utilities_profile ;;
+            wifi)          install_wifi_profile ;;
+            no-wifi)       install_no_wifi_profile ;;
+            bluetooth)     install_bluetooth_profile ;;
+            no-bluetooth)  install_no_bluetooth_profile ;;
+            gaming)        install_gaming_profile ;;
+            dev)           install_dev_profile ;;
+            devsecops)     install_devsecops_profile ;;
+            llm)           install_llm_profile ;;
+            network)       install_network_profile ;;
+            comms|browsers) install_comms_profile ;;
+            media)         install_media_profile ;;
+            utilities)     install_utilities_profile ;;
+            custom-tools)  install_custom_tools_profile ;;
             all)
+                install_wifi_profile
+                install_bluetooth_profile
                 install_gaming_profile
                 install_dev_profile
+                install_devsecops_profile
                 install_llm_profile
                 install_network_profile
-                install_browsers_profile
+                install_comms_profile
                 install_media_profile
                 install_utilities_profile
+                install_custom_tools_profile
                 ;;
             none|"") ;;
             *)         echo "[WARN] Unknown profile: $prof" >&2 ;;
         esac
     done
+fi
+
+if [[ "$RUN_CUSTOM_TOOLS" == "true" ]]; then
+    install_custom_tools_profile
 fi
 
 if [[ "$POST_CALAMARES" == "true" ]]; then
@@ -743,17 +1305,26 @@ chmod +x /usr/local/bin/novos-setup
 # Backward-compatible symlink so `setup-workstation` launches `novos-setup`
 ln -sfn /usr/local/bin/novos-setup /usr/local/bin/setup-workstation
 
+echo "==> [Stage 5.4] Executing novos-custom-tools & Pre-Configured Build Profiles..."
+(
+    cd "${REPO_ROOT}"
+    /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --install-enabled
+)
+
 # If BUILD_PROFILES is set in config/build.env (not "none"), run them now inside chroot
 if [[ -n "${BUILD_PROFILES:-}" && "${BUILD_PROFILES}" != "none" ]]; then
-    echo "==> [Stage 5.4] Pre-installing configured build profiles (${BUILD_PROFILES})..."
+    echo "==> [Stage 5.4b] Pre-installing configured build profiles (${BUILD_PROFILES})..."
     /usr/local/bin/novos-setup --install "${BUILD_PROFILES}" --user "${DEFAULT_USER}"
 fi
 
-echo "==> [Stage 5.5] Provisioning Calamares fstab.conf into /etc/calamares/modules/fstab.conf..."
-REPO_ROOT="/root/novos-build"
-mkdir -p /etc/calamares/modules
-cp -f "${REPO_ROOT}/calamares/modules/fstab.conf" /etc/calamares/modules/fstab.conf
+echo "==> [Stage 5.5] Provisioning Calamares module configurations into /etc/calamares/modules/ and /usr/share/calamares/modules/..."
+mkdir -p /etc/calamares/modules /usr/share/calamares/modules
+cp -f "${REPO_ROOT}/calamares/modules/"*.conf /etc/calamares/modules/
+cp -f "${REPO_ROOT}/calamares/modules/"*.yaml /etc/calamares/modules/
+cp -f "${REPO_ROOT}/calamares/modules/"*.conf /usr/share/calamares/modules/
+cp -f "${REPO_ROOT}/calamares/modules/"*.yaml /usr/share/calamares/modules/
 test -f /etc/calamares/modules/fstab.conf
+test -f /etc/calamares/modules/machineid.conf
 
 verify_stage5_post
-echo "==> [Stage 5] Profile manager and LLM/Dev environment wiring complete."
+echo "==> [Stage 5] Profile manager, custom-tools, DevSecOps Kali box, and LLM/Dev environment wiring complete."

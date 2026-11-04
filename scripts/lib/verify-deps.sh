@@ -115,8 +115,20 @@ verify_host_deps() {
         missing+=("ovmf")
     fi
 
-    if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; then
-        missing+=("qemu-ui-gtk")
+    local pacman_qemu_pkgs=(
+        qemu-ui-gtk
+        qemu-hw-display-virtio-vga
+        qemu-hw-display-virtio-vga-gl
+        qemu-hw-display-virtio-gpu
+        qemu-hw-display-virtio-gpu-pci
+    )
+    local qpkg
+    if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1; then
+        for qpkg in "${pacman_qemu_pkgs[@]}"; do
+            if ! pacman -Q "$qpkg" >/dev/null 2>&1; then
+                missing+=("$qpkg")
+            fi
+        done
     fi
 
     if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -160,16 +172,18 @@ verify_host_deps() {
                 fi
             done
             if [[ "$mode" == "qemu" ]]; then
-                found="false"
-                for existing_pkg in "${pkgs[@]+"${pkgs[@]}"}"; do
-                    if [[ "$existing_pkg" == "qemu-ui-gtk" ]]; then
-                        found="true"
-                        break
+                for qpkg in "${pacman_qemu_pkgs[@]}"; do
+                    found="false"
+                    for existing_pkg in "${pkgs[@]+"${pkgs[@]}"}"; do
+                        if [[ "$existing_pkg" == "$qpkg" ]]; then
+                            found="true"
+                            break
+                        fi
+                    done
+                    if [[ "$found" == "false" ]]; then
+                        pkgs+=("$qpkg")
                     fi
                 done
-                if [[ "$found" == "false" ]]; then
-                    pkgs+=("qemu-ui-gtk")
-                fi
             fi
             pacman -Sy --noconfirm --needed "${pkgs[@]}"
         else
@@ -187,8 +201,12 @@ verify_host_deps() {
         if [[ "$require_ovmf" == "true" ]] && ! _check_ovmf_firmware; then
             still_missing+=("ovmf")
         fi
-        if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk >/dev/null 2>&1; then
-            still_missing+=("qemu-ui-gtk")
+        if [[ "$mode" == "qemu" ]] && command -v pacman >/dev/null 2>&1; then
+            for qpkg in "${pacman_qemu_pkgs[@]}"; do
+                if ! pacman -Q "$qpkg" >/dev/null 2>&1; then
+                    still_missing+=("$qpkg")
+                fi
+            done
         fi
 
         if [[ "${#still_missing[@]}" -gt 0 ]]; then
@@ -300,16 +318,21 @@ kill_chroot_processes() {
     fi
 
     local pids=()
-    local proc_root pid root_target
+    local proc_root pid root_target cwd_target
     for proc_root in /proc/[0-9]*/root; do
         [[ -e "$proc_root" || -L "$proc_root" ]] || continue
         pid="${proc_root%/root}"
         pid="${pid#/proc/}"
-        [[ "$pid" == "$$" || "$pid" == "${PPID:-}" ]] && continue
+        [[ "$pid" == "$$" || "$pid" == "${BASHPID:-}" || "$pid" == "${PPID:-}" ]] && continue
         root_target="$(readlink -f "$proc_root" 2>/dev/null || true)"
-        [[ -z "$root_target" || "$root_target" == "/" ]] && continue
-        if [[ "$root_target" == "$mount_root" || "$root_target" == "${mount_root}/"* || \
+        cwd_target="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+        if [[ -n "$root_target" && "$root_target" != "/" ]] && \
+           [[ "$root_target" == "$mount_root" || "$root_target" == "${mount_root}/"* || \
               "$root_target" == "$real_mount_root" || "$root_target" == "${real_mount_root}/"* ]]; then
+            pids+=("$pid")
+        elif [[ -n "$cwd_target" && "$cwd_target" != "/" ]] && \
+             [[ "$cwd_target" == "$mount_root" || "$cwd_target" == "${mount_root}/"* || \
+                "$cwd_target" == "$real_mount_root" || "$cwd_target" == "${real_mount_root}/"* ]]; then
             pids+=("$pid")
         fi
     done
@@ -317,7 +340,19 @@ kill_chroot_processes() {
     if [[ "${#pids[@]}" -gt 0 ]]; then
         echo "==> Terminating ${#pids[@]} chroot process(es) inside ${mount_root}: ${pids[*]}"
         kill -TERM "${pids[@]}" 2>/dev/null || true
-        sleep 1
+        local poll_idx still_alive
+        for poll_idx in {1..10}; do
+            still_alive="false"
+            for pid in "${pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                    still_alive="true"
+                    break
+                fi
+            done
+            [[ "$still_alive" == "false" ]] && break
+            sleep 0.1
+        done
+
         local alive_pids=()
         for pid in "${pids[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
@@ -326,6 +361,17 @@ kill_chroot_processes() {
         done
         if [[ "${#alive_pids[@]}" -gt 0 ]]; then
             kill -KILL "${alive_pids[@]}" 2>/dev/null || true
+            for poll_idx in {1..10}; do
+                still_alive="false"
+                for pid in "${alive_pids[@]}"; do
+                    if kill -0 "$pid" 2>/dev/null; then
+                        still_alive="true"
+                        break
+                    fi
+                done
+                [[ "$still_alive" == "false" ]] && break
+                sleep 0.1
+            done
         fi
     fi
     return 0
@@ -527,7 +573,7 @@ verify_stage1_post() {
     return 0
 }
 
-# Stage 2 Post-Gate: Base system bootstrap, fstab (11 UUID= entries or ISO staging fstab), staged build.env
+# Stage 2 Post-Gate: Base system bootstrap, fstab (11 UUID= entries or ISO staging fstab), staged build.env, Cargo.toml & manifest.yaml
 verify_stage2_post() {
     local mount_root="${1:-${MOUNT_ROOT:-/mnt/novos}}"
     while [[ "$mount_root" == */ ]]; do
@@ -564,13 +610,18 @@ verify_stage2_post() {
         fi
     fi
 
-    local staged_env="${mount_root}/root/novos-build/config/build.env"
-    if [[ ! -f "$staged_env" ]]; then
-        echo "[FAIL] [Stage 2 Gate] Missing staged config ${staged_env}" >&2
-        errors=$((errors + 1))
-    else
-        echo "[OK]   [Stage 2 Gate] Verified ${staged_env}"
-    fi
+    local staged_file
+    for staged_file in \
+        "${mount_root}/root/novos-build/config/build.env" \
+        "${mount_root}/root/novos-build/Cargo.toml" \
+        "${mount_root}/root/novos-build/custom-tools/manifest.yaml"; do
+        if [[ ! -f "$staged_file" ]]; then
+            echo "[FAIL] [Stage 2 Gate] Missing staged file ${staged_file}" >&2
+            errors=$((errors + 1))
+        else
+            echo "[OK]   [Stage 2 Gate] Verified ${staged_file}"
+        fi
+    done
 
     if [[ "$errors" -gt 0 ]]; then
         echo "[FATAL] Stage 2 post-gate failed with ${errors} error(s)." >&2
@@ -657,7 +708,7 @@ verify_stage4_post() {
     root="$(_check_root_prefix "${1:-}")"
     local errors=0
 
-    local bins=(start-cosmic cosmic-comp cosmic-greeter tuigreet)
+    local bins=(start-cosmic cosmic-comp cosmic-greeter tuigreet novos-slippery-tiles novos-custom-tools)
     local bin
     for bin in "${bins[@]}"; do
         if ! _check_target_bin "$root" "$bin"; then
@@ -670,9 +721,24 @@ verify_stage4_post() {
 
     local files=(
         "/usr/local/bin/cosmic-greeter-app"
+        "/usr/local/bin/novos-wallpaper-auto"
+        "/usr/local/bin/novos-slippery-tiles"
+        "/usr/local/bin/novos-custom-tools"
         "/etc/pam.d/cosmic-greeter"
         "/usr/share/dbus-1/system.d/com.system76.CosmicGreeter.conf"
         "/usr/share/backgrounds/novos/nova-wallpaper.png"
+        "/usr/share/backgrounds/novos/nova-realistic-16x9.png"
+        "/usr/share/backgrounds/novos/nova-realistic-32x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-faceted-dark-16x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-faceted-dark-32x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-faceted-light-16x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-faceted-light-32x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-silhouette-dark-16x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-silhouette-dark-32x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-silhouette-light-16x9.png"
+        "/usr/share/backgrounds/novos/nova-minimal-silhouette-light-32x9.png"
+        "/usr/share/novos/themes/Dark.ron"
+        "/usr/share/novos/themes/Light.ron"
         "/usr/share/pixmaps/novos-logo.png"
         "/etc/skel/.config/cosmic/com.system76.CosmicTheme.Dark.Builder/v1/accent"
         "/usr/share/cosmic/com.system76.CosmicTheme.Dark/v2/list_button"
@@ -731,7 +797,7 @@ verify_stage4_post() {
     return 0
 }
 
-# Stage 5 Post-Gate: novos-setup, novos-llm-stack, docker-compose.yml, novos-env.sh
+# Stage 5 Post-Gate: novos-setup, novos-llm-stack, novos-sec-box, novos-custom-tools, novos-slippery-tiles, docker-compose.yml, novos-env.sh
 verify_stage5_post() {
     local root
     root="$(_check_root_prefix "${1:-}")"
@@ -740,6 +806,9 @@ verify_stage5_post() {
     local exec_files=(
         "/usr/local/bin/novos-setup"
         "/usr/local/bin/novos-llm-stack"
+        "/usr/local/bin/novos-sec-box"
+        "/usr/local/bin/novos-custom-tools"
+        "/usr/local/bin/novos-slippery-tiles"
     )
     local ef
     for ef in "${exec_files[@]}"; do
@@ -754,7 +823,13 @@ verify_stage5_post() {
     local cfg_files=(
         "/srv/llm/docker-compose.yml"
         "/etc/calamares/modules/fstab.conf"
+        "/etc/calamares/modules/machineid.conf"
         "/etc/profile.d/novos-env.sh"
+        "/etc/novos/custom-tools.yaml"
+        "/usr/share/novos/apt-markers/novos-profile-wifi_1.0_all.deb"
+        "/usr/share/novos/apt-markers/novos-profile-bluetooth_1.0_all.deb"
+        "/usr/share/novos/apt-markers/Packages"
+        "/etc/apt/sources.list.d/novos-markers.list"
     )
     local cf
     for cf in "${cfg_files[@]}"; do
@@ -763,6 +838,27 @@ verify_stage5_post() {
             errors=$((errors + 1))
         else
             echo "[OK]   [Stage 5 Gate] Verified file: ${root}${cf}"
+        fi
+    done
+
+    if [[ ! -f "${root}/usr/local/bin/novos-setup" ]] || ! grep -q -- '--pre-packages' "${root}/usr/local/bin/novos-setup"; then
+        echo "[FAIL] [Stage 5 Gate] ${root}/usr/local/bin/novos-setup missing '--pre-packages' handler" >&2
+        errors=$((errors + 1))
+    else
+        echo "[OK]   [Stage 5 Gate] Verified '--pre-packages' in ${root}/usr/local/bin/novos-setup"
+    fi
+
+    local sp_rel
+    for sp_rel in "/etc/calamares/modules/shellprocess-prepackages.conf" "/etc/calamares/modules/shellprocess-novos.conf"; do
+        local sp_target="${root}${sp_rel}"
+        if [[ ! -f "$sp_target" && -f "${VERIFY_REPO_ROOT}/calamares/modules/$(basename "$sp_rel")" ]]; then
+            sp_target="${VERIFY_REPO_ROOT}/calamares/modules/$(basename "$sp_rel")"
+        fi
+        if [[ ! -f "$sp_target" ]] || grep -q '\$' "$sp_target"; then
+            echo "[FAIL] [Stage 5 Gate] Missing or contains forbidden '\$' in ${sp_target}" >&2
+            errors=$((errors + 1))
+        else
+            echo "[OK]   [Stage 5 Gate] Verified zero '\$' characters in ${sp_target}"
         fi
     done
 
@@ -811,11 +907,16 @@ verify_stage6_post() {
         "/usr/share/dbus-1/system.d/com.system76.CosmicGreeter.conf"
         "/usr/local/bin/cosmic-greeter-launch"
         "/usr/local/bin/cosmic-session-launch"
+        "/usr/local/bin/novos-wallpaper-auto"
         "/usr/local/bin/novos-setup"
         "/usr/local/bin/novos-llm-stack"
+        "/usr/local/bin/novos-slippery-tiles"
+        "/usr/local/bin/novos-custom-tools"
+        "/usr/local/bin/novos-sec-box"
         "/usr/local/sbin/update-limine-snapshots"
         "/srv/llm/docker-compose.yml"
         "/etc/profile.d/novos-env.sh"
+        "/etc/novos/custom-tools.yaml"
         "/etc/apt/preferences.d/00-protect-core"
         "/etc/os-release"
         "/etc/lsb-release"
@@ -884,6 +985,27 @@ verify_stage6_post() {
         errors=$((errors + 1))
     fi
 
+    if [[ ! -f "${root}/usr/local/bin/novos-setup" ]] || ! grep -q -- '--pre-packages' "${root}/usr/local/bin/novos-setup"; then
+        echo "[FAIL] [Stage 6 Gate] ${root}/usr/local/bin/novos-setup missing '--pre-packages' handler" >&2
+        errors=$((errors + 1))
+    else
+        echo "[OK]   [Stage 6 Gate] Verified '--pre-packages' in ${root}/usr/local/bin/novos-setup"
+    fi
+
+    local sp_rel
+    for sp_rel in "/etc/calamares/modules/shellprocess-prepackages.conf" "/etc/calamares/modules/shellprocess-novos.conf"; do
+        local sp_target="${root}${sp_rel}"
+        if [[ ! -f "$sp_target" && -f "${VERIFY_REPO_ROOT}/calamares/modules/$(basename "$sp_rel")" ]]; then
+            sp_target="${VERIFY_REPO_ROOT}/calamares/modules/$(basename "$sp_rel")"
+        fi
+        if [[ ! -f "$sp_target" ]] || grep -q '\$' "$sp_target"; then
+            echo "[FAIL] [Stage 6 Gate] Missing or contains forbidden '\$' in ${sp_target}" >&2
+            errors=$((errors + 1))
+        else
+            echo "[OK]   [Stage 6 Gate] Verified zero '\$' characters in ${sp_target}"
+        fi
+    done
+
     if [[ "$errors" -gt 0 ]]; then
         echo "[FATAL] Stage 6 post-gate failed with ${errors} error(s)." >&2
         return 1
@@ -902,6 +1024,7 @@ verify_stage7_post() {
         "calamares/branding/novos/branding.desc"
         "calamares/branding/novos/stylesheet.qss"
         "calamares/modules/mount.conf"
+        "calamares/modules/machineid.conf"
         "calamares/modules/fstab.conf"
         "calamares/modules/partition.conf"
         "calamares/modules/unpackfs.conf"
@@ -1011,12 +1134,12 @@ run_self_test() {
     done
     rm -rf "$pycache_tmp" 2>/dev/null || true
 
-    echo "==> [Self-Test] Validating YAML syntax (yaml.safe_load) across calamares/..."
+    echo "==> [Self-Test] Validating YAML syntax (yaml.safe_load) across calamares/ and custom-tools/..."
     if [[ -d "${VERIFY_REPO_ROOT}/calamares" ]]; then
         local yaml_files=()
         while IFS= read -r -d '' yf; do
             yaml_files+=("$yf")
-        done < <(find "${VERIFY_REPO_ROOT}/calamares" -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.conf" \) -print0)
+        done < <(find "${VERIFY_REPO_ROOT}/calamares" "${VERIFY_REPO_ROOT}/custom-tools" -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.conf" \) -print0 2>/dev/null)
 
         for yf in "${yaml_files[@]}"; do
             python3 -c '
@@ -1026,6 +1149,117 @@ with open(sys.argv[1], "r", encoding="utf-8") as fh:
 ' "$yf"
             echo "[OK]   yaml.safe_load: ${yf#"${VERIFY_REPO_ROOT}/"}"
         done
+
+        # Verify Calamares netinstall.yaml package names & shellprocess DictionaryExpander invariants
+        python3 -c '
+import glob, os, re, subprocess, sys, yaml
+(
+    netinstall_path,
+    prepackages_path,
+    mount_path,
+    machineid_path,
+    novos_sp_path,
+    partition_path,
+    limine_py_path,
+    settings_path,
+    test_qemu_path,
+) = sys.argv[1:10]
+with open(netinstall_path, "r", encoding="utf-8") as fh:
+    groups = yaml.safe_load(fh) or []
+pkgs = set()
+for grp in groups:
+    pkgs.update(grp.get("packages", []) or [])
+    for sub in grp.get("subgroups", []) or []:
+        pkgs.update(sub.get("packages", []) or [])
+forbidden = {"antigravity-cli", "helix"} & pkgs
+if forbidden:
+    raise SystemExit(f"Forbidden invalid APT package(s) in netinstall.yaml: {sorted(forbidden)}")
+if "hx" not in pkgs or "antigravity" not in pkgs:
+    raise SystemExit("Expected hx and antigravity in netinstall.yaml")
+
+sp_dir = os.path.dirname(prepackages_path)
+sp_paths = sorted(set([prepackages_path, novos_sp_path] + glob.glob(os.path.join(sp_dir, "shellprocess*.conf"))))
+for sp_path in sp_paths:
+    with open(sp_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+        sp_cfg = yaml.safe_load(text) or {}
+    assert "$" not in text, f"Forbidden $ character in {sp_path} (breaks Calamares DictionaryExpander)"
+    assert set(re.findall(r"@@([^@]+)@@", text)) <= {"ROOT", "username"}, f"Forbidden Calamares macro in {sp_path}"
+    for entry in sp_cfg.get("script") or []:
+        cmd = entry.get("command") if isinstance(entry, dict) else entry
+        if isinstance(cmd, str):
+            subprocess.run(["sh", "-n", "-c", cmd], check=True)
+
+with open(prepackages_path, "r", encoding="utf-8") as fh:
+    pre_text = fh.read()
+if "/usr/local/bin/novos-setup --pre-packages" not in pre_text:
+    raise SystemExit("Missing required /usr/local/bin/novos-setup --pre-packages in shellprocess-prepackages.conf")
+
+with open(mount_path, "r", encoding="utf-8") as fh:
+    mount_cfg = yaml.safe_load(fh) or {}
+mounts = {m.get("mountPoint"): m for m in (mount_cfg.get("extraMounts") or [])}
+if mounts.get("/dev/pts", {}).get("fs") != "bind" or mounts.get("/run/udev", {}).get("fs") != "bind":
+    raise SystemExit("mount.conf must bind-mount both /dev/pts and /run/udev")
+
+with open(machineid_path, "r", encoding="utf-8") as fh:
+    mid_cfg = yaml.safe_load(fh) or {}
+if not mid_cfg.get("systemd"):
+    raise SystemExit("machineid.conf must enable systemd: true")
+
+with open(novos_sp_path, "r", encoding="utf-8") as fh:
+    novos_sp_text = fh.read()
+if "@@USER@@" in novos_sp_text:
+    raise SystemExit("Forbidden @@USER@@ placeholder found in shellprocess-novos.conf")
+if "@@username@@" not in novos_sp_text:
+    raise SystemExit("Missing required @@username@@ placeholder in shellprocess-novos.conf")
+
+with open(partition_path, "r", encoding="utf-8") as fh:
+    part_cfg = yaml.safe_load(fh) or {}
+if str(part_cfg.get("efiSystemPartitionSize", "")).strip() != "6144M":
+    raise SystemExit("partition.conf must set efiSystemPartitionSize: 6144M")
+
+with open(limine_py_path, "r", encoding="utf-8") as fh:
+    limine_py_text = fh.read()
+if "6144MiB" not in limine_py_text or "-6228M" not in limine_py_text:
+    raise SystemExit("limine-bootloader/main.py must contain 6144MiB and -6228M")
+if "2048MiB" in limine_py_text:
+    raise SystemExit("limine-bootloader/main.py must not contain 2048MiB")
+
+with open(settings_path, "r", encoding="utf-8") as fh:
+    settings_cfg = yaml.safe_load(fh) or {}
+mod_search = settings_cfg.get("modules-search") or []
+if "/usr/lib/x86_64-linux-gnu/calamares/modules" not in mod_search:
+    raise SystemExit("settings.conf modules-search must include /usr/lib/x86_64-linux-gnu/calamares/modules")
+
+with open(test_qemu_path, "r", encoding="utf-8") as fh:
+    tq_text = fh.read()
+for required_tok in (
+    "qemu-hw-display-virtio-vga",
+    "qemu-hw-display-virtio-vga-gl",
+    "qemu-hw-display-virtio-gpu",
+    "qemu-hw-display-virtio-gpu-pci",
+    "virtio-gpu-gl-pci",
+    "-vga std",
+    "novos-calamares-target.img",
+    "discard=unmap",
+):
+    if required_tok not in tq_text:
+        raise SystemExit(f"test-qemu.sh missing required token: {required_tok}")
+' \
+            "${VERIFY_REPO_ROOT}/calamares/modules/netinstall.yaml" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/shellprocess-prepackages.conf" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/mount.conf" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/machineid.conf" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/shellprocess-novos.conf" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/partition.conf" \
+            "${VERIFY_REPO_ROOT}/calamares/modules/limine-bootloader/main.py" \
+            "${VERIFY_REPO_ROOT}/calamares/settings.conf" \
+            "${VERIFY_REPO_ROOT}/scripts/test-qemu.sh"
+        echo "[OK]   Calamares and QEMU harness invariants verified (netinstall.yaml packages, prepackages debconf preseeds, mount.conf bind mounts, machineid.conf, shellprocess-novos.conf, partition.conf 6144M, limine-bootloader 6144MiB/-6228M, settings.conf modules-search, test-qemu.sh display/disk)."
+    fi
+    if [[ -x "${VERIFY_REPO_ROOT}/target/release/novos-custom-tools" && -f "${VERIFY_REPO_ROOT}/custom-tools/manifest.yaml" ]]; then
+        "${VERIFY_REPO_ROOT}/target/release/novos-custom-tools" --validate "${VERIFY_REPO_ROOT}/custom-tools/manifest.yaml" >/dev/null
+        echo "[OK]   novos-custom-tools --validate: custom-tools/manifest.yaml"
     fi
 
     echo "==> [Self-Test] Validating Host-Safety Invariants across scripts/..."

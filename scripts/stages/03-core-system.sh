@@ -38,6 +38,10 @@ Acquire::https::No-Cache "true";
 Acquire::BrokenProxy "true";
 Acquire::By-Hash "yes";
 DPkg::NoTriggers "false";
+DPkg::Options {
+  "--force-confdef";
+  "--force-confold";
+};
 APT::NeverAutoRemove {
   "^firmware-.*";
   "^linux-image-.*";
@@ -60,7 +64,18 @@ apt-get install -y --no-remove \
     kmod xz-utils zstd initramfs-tools-core udev klibc-utils busybox \
     btrfs-progs dosfstools parted fdisk gdisk efibootmgr snapper dracut network-manager inotify-tools gawk coreutils \
     util-linux util-linux-extra systemd-timesyncd libpam-systemd dbus-user-session polkitd \
-    whiptail dialog pciutils usbutils lsb-release
+    whiptail dialog debconf-utils python3 pciutils usbutils lsb-release
+
+# Preseed non-interactive debconf defaults so Calamares' packages module (which runs apt-get without
+# DEBIAN_FRONTEND=noninteractive) never hangs on whiptail/dialog prompts (e.g. wireshark-common at 85% or samba-common)
+debconf-set-selections << 'EOF'
+debconf debconf/frontend select Noninteractive
+debconf debconf/priority select critical
+wireshark-common wireshark-common/install-setuid boolean true
+samba-common samba-common/workgroup string WORKGROUP
+samba-common samba-common/dhcp boolean false
+samba-common samba-common/do_debconf boolean true
+EOF
 
 # Suppress build-time Snapper APT hooks inside staging chroot/Live environment
 mkdir -p /usr/share/novos
@@ -208,12 +223,16 @@ fi
 
 apt-get install -y --no-install-recommends dkms libelf-dev clang lld llvm
 
-echo "==> [Stage 3.7] Installing AMD/Intel Firmware & Unified Mesa 26+ RDNA4 (RX 9070 XT) Stack..."
-apt-get install -y --no-remove \
+echo "==> [Stage 3.7] Installing AMD/Intel Firmware, WiFi/Bluetooth Stack & Unified Mesa 26+ RDNA4 (RX 9070 XT) Stack..."
+apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y \
     firmware-amd-graphics amd64-microcode intel-microcode \
+    iwd wpasupplicant rfkill wireless-regdb iw \
+    firmware-iwlwifi firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211 firmware-misc-nonfree \
+    bluez \
     libgbm1 libegl-mesa0 libglx-mesa0 libgl1-mesa-dri libglx0 libegl1 \
     mesa-vulkan-drivers mesa-vulkan-drivers:i386 libvulkan1 libvulkan1:i386 \
     mesa-va-drivers mesa-opencl-icd vulkan-tools radeontop gamemode
+systemctl enable bluetooth.service 2>/dev/null || true
 
 echo "==> [Stage 3.8] Installing Limine Bootloader (UEFI + BIOS), Versioned Kernel Hook & Read-Write Snapshot Manager..."
 rm -rf /tmp/limine
