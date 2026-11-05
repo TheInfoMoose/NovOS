@@ -5,6 +5,7 @@ __pycache__/
 
 # Disk images and build artifacts
 build/
+/target/
 *.iso
 *.img
 *.qcow2
@@ -12,7 +13,8 @@ build/
 *.vmdk
 
 # Development environment and agent IDE settings
-.agents/
+.claude/settings.local.json
+.claude/state/
 .gemini/
 .vscode/
 .idea/
@@ -35,5 +37,4 @@ logs/
 *.logs.txt
 
 # Dev md
-STEPPED_IMPLEMENTATION_PLAN.md
 verbot-prompt.md
