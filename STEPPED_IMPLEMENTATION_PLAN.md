@@ -86,7 +86,7 @@
 
 **Verification boundary:** Agents run only static `POST_GATE`s. Steps marked **[USER BUILD]** in the roadmap require the user's fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars` with logs in `logs/` before the next phase begins.
 
-**Approval markers:** Steps 11A, 11B, 11C, 11D and 13D have a `PRE_GATE` that requires a line `## APPROVED <step>` (e.g. `## APPROVED 11A`) at the end of this file. Only the user adds these; the guard hooks (8A) block agents from writing them while a step is active.
+**Approval markers:** Steps 11A, 11B, 11C, 11D and 13D have a `PRE_GATE` that requires a line `## APPROVED <step>` (e.g. `## APPROVED 11A`) at the end of this file. Only the user adds these; the guard hooks (8A) block agents from writing them in every mode (Edit/Write content check, and shell writes to this file are refused).
 
 **Open questions (resolve before the named step):**
 * **Before 11C/11D:** Which exact package/app is the broken "native COSMIC Firefox" (package name or `.desktop` file)? Any other COSMIC-native apps observed broken?
@@ -102,12 +102,12 @@
 | :--- | :---: | :---: | :--- | :--- |
 | **STEP 1–5F** | **COMPLETED** | — | Stages 1–6 pipeline, Calamares fixes, Nebulous/Docker CI foundation | `scripts/*`, `calamares/*`, `docker/*`, `.nebulous/*` |
 | **STEP 6A–6G** | **COMPLETED** (`f6c235e`) | — | slippery-tiles extraction, Pop!_OS Docker QEMU + local LLM diagnostics | see Archive |
-| **STEP 7A** | PLANNED | `/goal` | Untrack `target/`; version `.agents/` + plan file | `.gitignore`, `target/` (index only) |
-| **STEP 7B** | PLANNED | `/goal` | Remove `--from-stage`, Stage 2 rootfs reuse; always compile Rust fresh | `scripts/build-novos.sh`, `scripts/stages/02-bootstrap-chroot.sh` |
-| **STEP 7C** | PLANNED | `/goal` | Delete dead wrappers + slippery-tiles export leftovers | `scripts/build-live-iso.sh` (DEL), `scripts/stages/07-live-iso.sh` (DEL), `scripts/export-slippery-tiles.sh` (DEL), `scripts/lib/verify-deps.sh` |
-| **STEP 7D** | PLANNED | `/goal` | Fix README structure + PROFILES slippery note | `README.md`, `docs/PROFILES.md` |
-| **STEP 7E** | PLANNED | `/goal` | Drop deleted paths from `.tracker` scopes | `.tracker/project.toml`, `.tracker/phases/01_core_engine/domains/scripts/scope.toml` |
-| **STEP 8A** | PLANNED | `/boost` | Claude hook guards (Bash deny, protected files, step scope lock) | `.claude/hooks/guard-bash.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/step-lock.sh` |
+| **STEP 7A** | **COMPLETED** | `/goal` | Untrack `target/`; version `.agents/` + plan file | `.gitignore`, `target/` (index only) |
+| **STEP 7B** | **COMPLETED** | `/goal` | Remove `--from-stage`, Stage 2 rootfs reuse; always compile Rust fresh | `scripts/build-novos.sh`, `scripts/stages/02-bootstrap-chroot.sh` |
+| **STEP 7C** | **COMPLETED** | `/goal` | Delete dead wrappers + slippery-tiles export leftovers | `scripts/build-live-iso.sh` (DEL), `scripts/stages/07-live-iso.sh` (DEL), `scripts/export-slippery-tiles.sh` (DEL), `scripts/lib/verify-deps.sh` |
+| **STEP 7D** | **COMPLETED** | `/goal` | Fix README structure + PROFILES slippery note | `README.md`, `docs/PROFILES.md` |
+| **STEP 7E** | **COMPLETED** | `/goal` | Drop deleted paths from `.tracker` scopes | `.tracker/project.toml`, `.tracker/phases/01_core_engine/domains/scripts/scope.toml` |
+| **STEP 8A** | **COMPLETED** | `/boost` | Claude hook guards (Bash deny, protected files, step scope lock) | `.claude/hooks/guard-bash.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/step-lock.sh` |
 | **STEP 8B** | PLANNED | `/goal` | Anti-lazy/over-fix diff guard hook + hook self-test | `.claude/hooks/guard-diff.sh`, `.claude/hooks/test-guards.sh` |
 | **STEP 8C** | PLANNED | `/goal` | Register hooks + permissions; project MCP config | `.claude/settings.json`, `.mcp.json` |
 | **STEP 8D** | PLANNED | `/goal` | Port domain skills (Skills.md §3.1–3.3) | `.claude/skills/novos-linux-toolchain/SKILL.md`, `.claude/skills/novos-build-automation/SKILL.md`, `.claude/skills/novos-debugging/SKILL.md` |
