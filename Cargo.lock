@@ -5,7 +5,3 @@ version = 4
 [[package]]
 name = "novos-custom-tools"
 version = "0.1.0"
-
-[[package]]
-name = "novos-slippery-tiles"
-version = "0.1.0"

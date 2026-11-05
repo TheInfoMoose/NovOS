@@ -658,22 +658,22 @@ def verify_repo_invariants(
     ct_yaml = repo_root / "custom-tools" / "manifest.yaml"
     tools = parse_custom_tools_manifest_yaml(ct_yaml)
     tools_by_name = {t.get("name"): t for t in tools if t.get("name")}
-    if "novos-slippery-tiles" not in tools_by_name:
-        if "novos-slippery-tiles" not in approved:
+    if "novos-custom-tools" not in tools_by_name:
+        if "novos-custom-tools" not in approved:
             violations.append(
                 {
                     "type": "repo_custom_tool_missing",
-                    "item": "novos-slippery-tiles",
-                    "detail": "novos-slippery-tiles missing from custom-tools/manifest.yaml",
+                    "item": "novos-custom-tools",
+                    "detail": "novos-custom-tools missing from custom-tools/manifest.yaml",
                 }
             )
-    elif not tools_by_name["novos-slippery-tiles"].get("enabled", False):
-        if "novos-slippery-tiles" not in approved:
+    elif not tools_by_name["novos-custom-tools"].get("enabled", False):
+        if "novos-custom-tools" not in approved:
             violations.append(
                 {
                     "type": "repo_custom_tool_disabled",
-                    "item": "novos-slippery-tiles",
-                    "detail": "novos-slippery-tiles is disabled in custom-tools/manifest.yaml",
+                    "item": "novos-custom-tools",
+                    "detail": "novos-custom-tools is disabled in custom-tools/manifest.yaml",
                 }
             )
 
@@ -1316,7 +1316,7 @@ class NebulousCtlSelfTests(unittest.TestCase):
                 },
             },
             "custom_binaries": {
-                "/usr/local/bin/novos-slippery-tiles": {
+                "/usr/local/bin/novos-custom-tools": {
                     "required": True,
                     "min_version": "0.1.0",
                 },
@@ -1340,8 +1340,8 @@ class NebulousCtlSelfTests(unittest.TestCase):
                 "btrfs-progs": "6.8-1",
             },
             "custom_binaries": {
-                "novos-slippery-tiles": {
-                    "path": "/usr/local/bin/novos-slippery-tiles",
+                "novos-custom-tools": {
+                    "path": "/usr/local/bin/novos-custom-tools",
                     "present": True,
                     "version": "0.1.0",
                 },
@@ -1366,8 +1366,8 @@ class NebulousCtlSelfTests(unittest.TestCase):
                 "btrfs-progs": "6.8-1",
             },
             "custom_binaries": {
-                "novos-slippery-tiles": {
-                    "path": "/usr/local/bin/novos-slippery-tiles",
+                "novos-custom-tools": {
+                    "path": "/usr/local/bin/novos-custom-tools",
                     "present": True,
                     "version": "0.2.0",
                 },
@@ -1433,7 +1433,7 @@ class NebulousCtlSelfTests(unittest.TestCase):
         live_missing_flags_and_cal = {
             "packages": live_upgrade["packages"],
             "custom_binaries": {
-                "novos-slippery-tiles": live_upgrade["custom_binaries"]["novos-slippery-tiles"],
+                "novos-custom-tools": live_upgrade["custom_binaries"]["novos-custom-tools"],
                 "novos-setup": {
                     "path": "/usr/local/bin/novos-setup",
                     "present": True,

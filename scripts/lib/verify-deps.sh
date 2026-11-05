@@ -708,7 +708,7 @@ verify_stage4_post() {
     root="$(_check_root_prefix "${1:-}")"
     local errors=0
 
-    local bins=(start-cosmic cosmic-comp cosmic-greeter tuigreet novos-slippery-tiles novos-custom-tools)
+    local bins=(start-cosmic cosmic-comp cosmic-greeter tuigreet novos-custom-tools)
     local bin
     for bin in "${bins[@]}"; do
         if ! _check_target_bin "$root" "$bin"; then
@@ -722,7 +722,6 @@ verify_stage4_post() {
     local files=(
         "/usr/local/bin/cosmic-greeter-app"
         "/usr/local/bin/novos-wallpaper-auto"
-        "/usr/local/bin/novos-slippery-tiles"
         "/usr/local/bin/novos-custom-tools"
         "/etc/pam.d/cosmic-greeter"
         "/usr/share/dbus-1/system.d/com.system76.CosmicGreeter.conf"
@@ -797,7 +796,7 @@ verify_stage4_post() {
     return 0
 }
 
-# Stage 5 Post-Gate: novos-setup, novos-llm-stack, novos-sec-box, novos-custom-tools, novos-slippery-tiles, docker-compose.yml, novos-env.sh
+# Stage 5 Post-Gate: novos-setup, novos-llm-stack, novos-sec-box, novos-custom-tools, docker-compose.yml, novos-env.sh
 verify_stage5_post() {
     local root
     root="$(_check_root_prefix "${1:-}")"
@@ -808,7 +807,6 @@ verify_stage5_post() {
         "/usr/local/bin/novos-llm-stack"
         "/usr/local/bin/novos-sec-box"
         "/usr/local/bin/novos-custom-tools"
-        "/usr/local/bin/novos-slippery-tiles"
     )
     local ef
     for ef in "${exec_files[@]}"; do
@@ -910,7 +908,6 @@ verify_stage6_post() {
         "/usr/local/bin/novos-wallpaper-auto"
         "/usr/local/bin/novos-setup"
         "/usr/local/bin/novos-llm-stack"
-        "/usr/local/bin/novos-slippery-tiles"
         "/usr/local/bin/novos-custom-tools"
         "/usr/local/bin/novos-sec-box"
         "/usr/local/sbin/update-limine-snapshots"
@@ -1345,6 +1342,23 @@ if not isinstance(data, dict) or not data:
     echo "[OK]   test-docker-qemu.py --self-test"
     "${VERIFY_REPO_ROOT}/scripts/mcp_nebulous_ci.py" --self-test
     echo "[OK]   mcp_nebulous_ci.py --self-test"
+    "${VERIFY_REPO_ROOT}/scripts/setup-popos-test-env.sh" --self-test
+    echo "[OK]   scripts/setup-popos-test-env.sh --self-test"
+    "${VERIFY_REPO_ROOT}/scripts/export-slippery-tiles.sh" --self-test
+    echo "[OK]   scripts/export-slippery-tiles.sh --self-test"
+
+    if command -v cargo >/dev/null 2>&1 && [[ -f "${VERIFY_REPO_ROOT}/Cargo.toml" ]]; then
+        echo "==> [Self-Test] Running Rust workspace checks (cargo fmt, clippy, test)..."
+        (
+            cd "${VERIFY_REPO_ROOT}"
+            cargo fmt --all -- --check
+            echo "[OK]   cargo fmt --all -- --check"
+            cargo clippy --workspace --all-targets -- -D warnings
+            echo "[OK]   cargo clippy --workspace --all-targets -- -D warnings"
+            cargo test --workspace
+            echo "[OK]   cargo test --workspace"
+        )
+    fi
 
     echo "==> [Self-Test] All syntax and schema checks passed."
 }

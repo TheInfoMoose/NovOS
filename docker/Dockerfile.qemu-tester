@@ -3,12 +3,17 @@
 # ==============================================================================
 FROM debian:sid-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    NOVOS_VM_STORAGE_DIR=/vms \
+    NOVOS_LLM_ENDPOINT=http://novos-llm-host:8080/v1 \
+    NOVOS_LLM_MODEL=Qwen3-14B-Q4_K_M.gguf
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qemu-system-x86 \
     qemu-utils \
     ovmf \
+    swtpm \
+    swtpm-tools \
     socat \
     openssh-client \
     sshpass \
@@ -19,6 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pil \
     xorriso \
     squashfs-tools \
+    iproute2 \
+    procps \
+    curl \
+    ca-certificates \
+    && mkdir -p /vms \
     && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 5900 6080 2222

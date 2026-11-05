@@ -16,9 +16,50 @@ services:
       dockerfile: docker/Dockerfile.qemu-tester
     devices:
       - "/dev/kvm:/dev/kvm"
+      - "/dev/dri:/dev/dri"
+    environment:
+      - NOVOS_VM_STORAGE_DIR=/vms
+      - NOVOS_LLM_ENDPOINT=${NOVOS_LLM_ENDPOINT:-http://novos-llm-host:8080/v1}
+      - NOVOS_LLM_MODEL=${NOVOS_LLM_MODEL:-Qwen3-14B-Q4_K_M.gguf}
     ports:
       - "127.0.0.1:6080:6080"
       - "127.0.0.1:5900:5900"
     volumes:
       - "..:/workspace"
+      - "${NOVOS_VM_HOST_DIR:-/srv/docker-vms:/vms}"
     working_dir: /workspace
+
+  novos-llm-host:
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    container_name: novos-llm-host
+    restart: unless-stopped
+    devices:
+      - "/dev/dri:/dev/dri"
+      - "/dev/kfd:/dev/kfd"
+    group_add:
+      - "video"
+      - "render"
+    ipc: host
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - "${NOVOS_LLM_HOST_DIR:-/srv/docker-llms:/models}"
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=12.0.1
+      - GGML_VK_VISIBLE_DEVICES=0
+    command:
+      - "-m"
+      - "/models/${NOVOS_LLM_MODEL:-Qwen3-14B-Q4_K_M.gguf}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "16384"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"

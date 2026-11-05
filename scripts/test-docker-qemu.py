@@ -9,7 +9,6 @@ across two tiers:
       2. Guest network/SSH or serial milestone reached (`systemctl is-system-running`
          or `cosmic-comp`/`greetd` active).
       3. Verify `/etc/os-release` (`ID=novos`),
-         `/usr/local/bin/novos-slippery-tiles --self-test`,
          `/usr/local/bin/novos-custom-tools --self-test`,
          and `/etc/calamares/settings.conf` inside the live guest.
       4. Capture final QMP `screendump` to `logs/qemu-artifacts/live-boot-final.ppm`.
@@ -42,7 +41,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
+import urllib.error
+import urllib.request
 import zlib
 from typing import Any
 
@@ -56,7 +58,9 @@ NEBULOUS_CTL = REPO_ROOT / "scripts" / "nebulous-ctl.py"
 BUILD_ENV_PATH = REPO_ROOT / "config" / "build.env"
 DEFAULT_ISO_PATH = "./build/NovOS-sid-amd64.iso"
 DEFAULT_ITEM_TOML = ".nebulous/items/item-001-docker-qemu-ci.toml"
-DEFAULT_TARGET_DISK = REPO_ROOT / "build" / "novos-calamares-target.img"
+HOST_DOCKER_VMS_DIR = pathlib.Path("/srv/docker-vms")
+DEFAULT_LLM_ENDPOINT = os.environ.get("NOVOS_LLM_ENDPOINT", "http://127.0.0.1:8081/v1")
+DEFAULT_LLM_MODEL = os.environ.get("NOVOS_LLM_MODEL", "Qwen3-14B-Q4_K_M.gguf")
 ARTIFACTS_DIR = REPO_ROOT / "logs" / "qemu-artifacts"
 
 DEFAULT_TIMEOUT_BY_TIER = {
@@ -130,6 +134,34 @@ def load_build_env(env_path: pathlib.Path = BUILD_ENV_PATH) -> dict[str, str]:
             v = v[1:-1]
         cfg[k] = v
     return cfg
+
+
+def resolve_vm_storage_dir(
+    explicit_dir: str | pathlib.Path | None = None,
+    host_vm_dir: pathlib.Path = HOST_DOCKER_VMS_DIR,
+    fallback_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """
+    Resolve persistent VM storage directory for `novos-calamares-target.img` and `ovmf_vars.fd`:
+      1. Explicit `--vm-dir` argument (`explicit_dir`)
+      2. `NOVOS_VM_STORAGE_DIR` environment variable (e.g. `/vms` inside container)
+      3. `/srv/docker-vms` on the host when present and writable
+      4. `REPO_ROOT / "build"` fallback
+    """
+    if explicit_dir is not None and str(explicit_dir).strip():
+        return pathlib.Path(explicit_dir).resolve()
+
+    env_dir = os.environ.get("NOVOS_VM_STORAGE_DIR", "").strip()
+    if env_dir:
+        return pathlib.Path(env_dir).resolve()
+
+    if host_vm_dir.is_dir() and os.access(host_vm_dir, os.W_OK | os.X_OK):
+        return host_vm_dir.resolve()
+
+    if fallback_dir is not None:
+        return fallback_dir.resolve()
+
+    return (REPO_ROOT / "build").resolve()
 
 
 def locate_ovmf_firmware(
@@ -495,7 +527,6 @@ def build_milestone_plan(tier: str) -> list[dict[str, str]]:
             "tier": "live-boot",
             "description": (
                 "Verify /etc/os-release (ID=novos), "
-                "/usr/local/bin/novos-slippery-tiles --self-test, "
                 "/usr/local/bin/novos-custom-tools --self-test, "
                 "and /etc/calamares/settings.conf inside the live guest"
             ),
@@ -541,8 +572,126 @@ def match_serial_milestones(serial_text: str) -> dict[str, bool]:
 
 
 # ==============================================================================
-# 4. Pre-Flight Guardrails & Post-Run Telemetry Integration
+# 4. Pre-Flight Guardrails, Post-Run Telemetry & Local Qwen3-14B Diagnostics
 # ==============================================================================
+
+def _parse_llm_json_content(raw_content: Any) -> dict[str, Any]:
+    """Extract a JSON object from LLM message content, stripping <think> blocks or markdown fences."""
+    if isinstance(raw_content, dict):
+        return raw_content
+    if not isinstance(raw_content, str):
+        return {}
+    cleaned = re.sub(r"(?is)<think>.*?</think>", "", raw_content).strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if 0 <= start < end:
+            try:
+                parsed = json.loads(cleaned[start : end + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def query_local_llm_diagnostic(
+    error_summary: str,
+    serial_tail: str,
+    negative_constraints: list[str],
+    endpoint: str = DEFAULT_LLM_ENDPOINT,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """
+    POST a bounded diagnostic prompt to `<endpoint>/chat/completions`
+    (`model: "Qwen3-14B-Q4_K_M.gguf"`, `temperature: 0.1`,
+    `response_format: {"type": "json_object"}`) requesting:
+      `{"root_cause": "...", "subsystem": "...", "recommended_fix": "...", "violates_negative_constraints": false}`
+    Gracefully returns `{"available": False, ...}` if the local LLM container is offline.
+    """
+    base_url = (endpoint or DEFAULT_LLM_ENDPOINT).strip().rstrip("/")
+    url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+    model_name = os.environ.get("NOVOS_LLM_MODEL", DEFAULT_LLM_MODEL)
+
+    req_payload = {
+        "model": model_name,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a NovOS Linux kernel/UEFI/COSMIC CI diagnostic assistant. "
+                    "Respond ONLY with a valid JSON object matching: "
+                    '{"root_cause": "...", "subsystem": "...", "recommended_fix": "...", '
+                    '"violates_negative_constraints": false}. '
+                    "Never recommend dropping packages, downgrading versions, or repeating "
+                    "approaches forbidden by negative_constraints."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "error_summary": str(error_summary)[:1000],
+                        "serial_tail": str(serial_tail)[-4000:],
+                        "negative_constraints": list(negative_constraints or []),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(req_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_body = resp.read().decode("utf-8", errors="replace")
+        resp_json = json.loads(raw_body)
+
+        content_obj: dict[str, Any] = {}
+        choices = resp_json.get("choices")
+        if isinstance(choices, list) and choices:
+            msg_content = choices[0].get("message", {}).get("content", "")
+            content_obj = _parse_llm_json_content(msg_content)
+        elif isinstance(resp_json, dict) and "root_cause" in resp_json:
+            content_obj = resp_json
+
+        return {
+            "available": True,
+            "endpoint": url,
+            "model": model_name,
+            "root_cause": str(content_obj.get("root_cause", "unknown")),
+            "subsystem": str(content_obj.get("subsystem", "unknown")),
+            "recommended_fix": str(content_obj.get("recommended_fix", "")),
+            "violates_negative_constraints": bool(
+                content_obj.get("violates_negative_constraints", False)
+            ),
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "endpoint": url,
+            "model": model_name,
+            "error": str(exc),
+            "root_cause": "",
+            "subsystem": "",
+            "recommended_fix": "",
+            "violates_negative_constraints": False,
+        }
+
 
 def run_preflight_guardrails(
     item_toml: pathlib.Path,
@@ -723,7 +872,6 @@ def verify_live_guest_invariants(build_cfg: dict[str, str], ssh_port: int = 2222
     """
     Execute Tier 1 (`live-boot`) Milestone 3 inside the guest via SSH:
       - `/etc/os-release` (`ID=novos`)
-      - `/usr/local/bin/novos-slippery-tiles --self-test`
       - `/usr/local/bin/novos-custom-tools --self-test`
       - `/etc/calamares/settings.conf`
       - `systemctl is-system-running` or `cosmic-comp` / `greetd` active
@@ -736,7 +884,6 @@ def verify_live_guest_invariants(build_cfg: dict[str, str], ssh_port: int = 2222
     probe_script = (
         "set -e; "
         f"grep -E '^ID=\"?{expected_id}\"?$' /etc/os-release; "
-        "/usr/local/bin/novos-slippery-tiles --self-test; "
         "/usr/local/bin/novos-custom-tools --self-test; "
         "test -f /etc/calamares/settings.conf; "
         "(systemctl is-system-running | grep -E '^(running|degraded)$' || "
@@ -974,7 +1121,12 @@ def run_harness(args: argparse.Namespace) -> int:
     build_cfg = load_build_env()
     iso_path = pathlib.Path(args.iso).resolve()
     item_toml = pathlib.Path(args.item).resolve()
-    target_disk = pathlib.Path(args.disk).resolve()
+    vm_storage_dir = resolve_vm_storage_dir(args.vm_dir)
+    target_disk = (
+        pathlib.Path(args.disk).resolve()
+        if args.disk
+        else (vm_storage_dir / "novos-calamares-target.img").resolve()
+    )
     tier = args.tier
     timeout_sec = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_BY_TIER[tier]
 
@@ -992,7 +1144,7 @@ def run_harness(args: argparse.Namespace) -> int:
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     qmp_socket = pathlib.Path(tempfile.gettempdir()) / f"novos-qmp-{os.getpid()}.sock"
     serial_log = ARTIFACTS_DIR / f"{ts}-{tier}-serial.log"
-    ovmf_vars_path = REPO_ROOT / "build" / "ovmf_vars.fd"
+    ovmf_vars_path = (vm_storage_dir / "ovmf_vars.fd").resolve()
 
     ovmf_info = locate_ovmf_firmware(dry_run=args.dry_run)
     resolved_vars = prepare_ovmf_vars(
@@ -1029,6 +1181,10 @@ def run_harness(args: argparse.Namespace) -> int:
             "tier": tier,
             "iso": str(iso_path),
             "item_toml": str(item_toml),
+            "vm_storage_dir": str(vm_storage_dir),
+            "target_disk": str(target_disk),
+            "ovmf_vars_path": str(ovmf_vars_path),
+            "llm_endpoint": str(args.llm_endpoint),
             "timeout_seconds": timeout_sec,
             "vnc_enabled": bool(args.vnc),
             "websockify_cmd": (
@@ -1143,6 +1299,7 @@ def run_harness(args: argparse.Namespace) -> int:
 
             installed_serial_log = ARTIFACTS_DIR / f"{ts}-install-e2e-reboot-serial.log"
             installed_serial_log.touch(exist_ok=True)
+            serial_log = installed_serial_log
             reboot_cmd = build_qemu_command(
                 iso_path=iso_path,
                 target_disk=target_disk,
@@ -1204,10 +1361,39 @@ def run_harness(args: argparse.Namespace) -> int:
             except OSError:
                 pass
 
+    llm_diagnostic: dict[str, Any] | None = None
+    if status == "fail":
+        serial_tail = ""
+        if serial_log.is_file():
+            try:
+                serial_tail = "".join(
+                    serial_log.read_text(encoding="utf-8", errors="replace").splitlines(True)[-40:]
+                )
+            except OSError:
+                serial_tail = ""
+        neg_constraints: list[str] = []
+        if item_toml.is_file():
+            try:
+                with open(item_toml, "rb") as tf:
+                    neg_constraints = list(
+                        tomllib.load(tf).get("item", {}).get("negative_constraints", [])
+                    )
+            except Exception:
+                neg_constraints = []
+        llm_diagnostic = query_local_llm_diagnostic(
+            error_summary=error_summary,
+            serial_tail=serial_tail,
+            negative_constraints=neg_constraints,
+            endpoint=args.llm_endpoint,
+        )
+
     verdict_payload = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "tier": tier,
         "iso": str(iso_path),
+        "vm_storage_dir": str(vm_storage_dir),
+        "target_disk": str(target_disk),
+        "ovmf_vars_path": str(ovmf_vars_path),
         "status": status,
         "exit_code": EXIT_OK if status == "pass" else EXIT_ERROR,
         "qmp_socket": str(qmp_socket),
@@ -1215,6 +1401,7 @@ def run_harness(args: argparse.Namespace) -> int:
         "milestones": completed_milestones,
         "screendumps": screendumps,
         "error_summary": error_summary,
+        "llm_diagnostic": llm_diagnostic,
     }
     rec_rc = record_test_telemetry(
         item_toml=item_toml,
@@ -1435,6 +1622,153 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
             self.assertEqual(rc_locked, EXIT_LOOP_LOCK)
             self.assertFalse(sentinel_disk.exists())
 
+    def test_resolve_vm_storage_dir_and_local_llm_diagnostic(self) -> None:
+        import http.server
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            explicit_vm_dir = tmp_path / "explicit-vms"
+            env_vm_dir = tmp_path / "env-vms"
+            host_vm_dir = tmp_path / "srv-docker-vms"
+            fallback_dir = tmp_path / "fallback-build"
+            explicit_vm_dir.mkdir()
+            env_vm_dir.mkdir()
+            host_vm_dir.mkdir()
+            fallback_dir.mkdir()
+
+            old_env = os.environ.get("NOVOS_VM_STORAGE_DIR")
+            try:
+                os.environ["NOVOS_VM_STORAGE_DIR"] = str(env_vm_dir)
+                # 1. Explicit --vm-dir takes highest precedence
+                self.assertEqual(
+                    resolve_vm_storage_dir(
+                        explicit_dir=str(explicit_vm_dir),
+                        host_vm_dir=host_vm_dir,
+                        fallback_dir=fallback_dir,
+                    ),
+                    explicit_vm_dir.resolve(),
+                )
+                # 2. NOVOS_VM_STORAGE_DIR takes second precedence
+                self.assertEqual(
+                    resolve_vm_storage_dir(
+                        explicit_dir=None,
+                        host_vm_dir=host_vm_dir,
+                        fallback_dir=fallback_dir,
+                    ),
+                    env_vm_dir.resolve(),
+                )
+                # 3. Writable /srv/docker-vms takes third precedence
+                os.environ.pop("NOVOS_VM_STORAGE_DIR", None)
+                self.assertEqual(
+                    resolve_vm_storage_dir(
+                        explicit_dir=None,
+                        host_vm_dir=host_vm_dir,
+                        fallback_dir=fallback_dir,
+                    ),
+                    host_vm_dir.resolve(),
+                )
+                # 4. Fallback to build dir when host_vm_dir does not exist
+                self.assertEqual(
+                    resolve_vm_storage_dir(
+                        explicit_dir=None,
+                        host_vm_dir=tmp_path / "missing-srv-vms",
+                        fallback_dir=fallback_dir,
+                    ),
+                    fallback_dir.resolve(),
+                )
+            finally:
+                if old_env is not None:
+                    os.environ["NOVOS_VM_STORAGE_DIR"] = old_env
+                else:
+                    os.environ.pop("NOVOS_VM_STORAGE_DIR", None)
+
+            # Ephemeral HTTP server testing query_local_llm_diagnostic()
+            captured_requests: list[dict[str, Any]] = []
+
+            class _MockLlamaHandler(http.server.BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                    captured_requests.append({"path": self.path, "body": body})
+                    reply = {
+                        "id": "chatcmpl-novos-test",
+                        "object": "chat.completion",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": json.dumps(
+                                        {
+                                            "root_cause": "Missing greetd PAM configuration in live rootfs",
+                                            "subsystem": "stage-04-cosmic-desktop",
+                                            "recommended_fix": "Ensure /etc/greetd/config.toml points to cosmic-greeter",
+                                            "violates_negative_constraints": False,
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                    encoded = json.dumps(reply).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(encoded)))
+                    self.end_headers()
+                    self.wfile.write(encoded)
+
+                def log_message(self, format: str, *args: Any) -> None:
+                    return
+
+            httpd = http.server.HTTPServer(("127.0.0.1", 0), _MockLlamaHandler)
+            port = httpd.server_port
+            srv_thread = threading.Thread(target=httpd.handle_request, daemon=True)
+            srv_thread.start()
+
+            diag = query_local_llm_diagnostic(
+                error_summary="Timed out waiting for guest SSH readiness",
+                serial_tail="systemd[1]: Failed to start greetd.service",
+                negative_constraints=["DO NOT drop cosmic-greeter package"],
+                endpoint=f"http://127.0.0.1:{port}/v1",
+            )
+            srv_thread.join(timeout=3)
+            httpd.server_close()
+
+            self.assertTrue(diag["available"])
+            self.assertEqual(diag["subsystem"], "stage-04-cosmic-desktop")
+            self.assertIn("greetd", diag["root_cause"])
+            self.assertFalse(diag["violates_negative_constraints"])
+            self.assertEqual(len(captured_requests), 1)
+            self.assertEqual(captured_requests[0]["path"], "/v1/chat/completions")
+            self.assertEqual(
+                captured_requests[0]["body"]["model"], "Qwen3-14B-Q4_K_M.gguf"
+            )
+            self.assertEqual(captured_requests[0]["body"]["temperature"], 0.1)
+            self.assertEqual(
+                captured_requests[0]["body"]["response_format"], {"type": "json_object"}
+            )
+
+            # Verify Qwen3 <think> tags and ```json fences are parsed cleanly
+            fenced_parsed = _parse_llm_json_content(
+                "<think>Analyzing serial tail...</think>\n```json\n"
+                '{"root_cause": "Missing OVMF vars", "subsystem": "uefi", '
+                '"recommended_fix": "Reset vars", "violates_negative_constraints": false}\n```'
+            )
+            self.assertEqual(fenced_parsed.get("root_cause"), "Missing OVMF vars")
+            self.assertEqual(fenced_parsed.get("subsystem"), "uefi")
+
+            # Offline fallback must not crash
+            offline_diag = query_local_llm_diagnostic(
+                error_summary="Boot timeout",
+                serial_tail="Limine handoff",
+                negative_constraints=[],
+                endpoint="http://127.0.0.1:1/v1",
+                timeout=0.5,
+            )
+            self.assertFalse(offline_diag["available"])
+            self.assertIn("error", offline_diag)
+
 
 def run_self_tests() -> int:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestDockerQemuHarnessSelfTests)
@@ -1501,9 +1835,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Guest vCPU count (default: 4)",
     )
     parser.add_argument(
+        "--vm-dir",
+        default=None,
+        help="Persistent VM storage directory for target disk and OVMF vars (default: NOVOS_VM_STORAGE_DIR, /srv/docker-vms, or ./build)",
+    )
+    parser.add_argument(
+        "--llm-endpoint",
+        default=DEFAULT_LLM_ENDPOINT,
+        help=f"OpenAI-compatible llama.cpp endpoint for local Qwen3-14B diagnostics (default: {DEFAULT_LLM_ENDPOINT})",
+    )
+    parser.add_argument(
         "--disk",
-        default=str(DEFAULT_TARGET_DISK),
-        help=f"VirtIO target disk path (default: {DEFAULT_TARGET_DISK})",
+        default=None,
+        help="VirtIO target disk path (default: <vm-dir>/novos-calamares-target.img)",
     )
     parser.add_argument(
         "--disk-size",
@@ -1524,7 +1868,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="Run built-in unit tests for QMP builder, milestone regexes, OVMF locator, and nebulous-ctl integration",
+        help="Run built-in unit tests for QMP builder, milestone regexes, OVMF locator, VM storage resolver, local LLM diagnostics, and nebulous-ctl integration",
     )
     return parser
 

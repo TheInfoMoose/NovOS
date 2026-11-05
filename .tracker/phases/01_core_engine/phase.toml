@@ -45,11 +45,6 @@ type = "rust_crate"
 path = "domains/novos_custom_tools"
 
 [[scopes.manifest]]
-id = "novos_slippery_tiles"
-type = "rust_crate"
-path = "domains/novos_slippery_tiles"
-
-[[scopes.manifest]]
 id = "scripts"
 type = "python_pkg"
 path = "domains/scripts"

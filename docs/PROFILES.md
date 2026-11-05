@@ -147,10 +147,10 @@ novos-sec-box stop
 
 ---
 
-## 5. Declarative Custom Tools (`novos-custom-tools`) & Slippery Tile Engine (`novos-slippery-tiles`)
+## 5. Declarative Custom Tools (`novos-custom-tools`)
 
 ### 5.1 `/usr/local/bin/novos-custom-tools` (`custom-tools/manifest.yaml`)
-NovOS includes a native Rust declarative builder (`/usr/local/bin/novos-custom-tools`) backed by `/etc/novos/custom-tools.yaml` (copied from [`custom-tools/manifest.yaml`](../custom-tools/manifest.yaml)). It supports three tool types (`local`, `github_release`, `github_source`):
+NovOS includes a native Rust declarative builder (`/usr/local/bin/novos-custom-tools`, symlinked at `/usr/local/bin/novos-ct`) backed by `/etc/novos/custom-tools.yaml` (copied from [`custom-tools/manifest.yaml`](../custom-tools/manifest.yaml)). It supports three tool types (`local`, `github_release`, `github_source`):
 
 ```bash
 # Validate manifest schema and required per-type fields:
@@ -163,15 +163,9 @@ novos-custom-tools --manifest /etc/novos/custom-tools.yaml --list
 sudo novos-custom-tools --manifest /etc/novos/custom-tools.yaml --install-enabled
 
 # Install or rebuild a single tool by name:
-sudo novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool novos-slippery-tiles
+sudo novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool novos-custom-tools
 ```
 
-### 5.2 `/usr/local/bin/novos-slippery-tiles` (`12×4` Ultrawide & `8×4` Standard Tiling in Rust)
-Built in Rust as part of the workspace and provisioned at `/usr/local/bin/novos-slippery-tiles` (with symlink `/usr/local/bin/novos-gtile-overlay`), `novos-slippery-tiles` provides adaptive grid window tiling for COSMIC Desktop:
-- **Adaptive Grid Profiles:** Automatically selects a **`12×4` grid** (`16 px` inner gap, `24 px` outer gap) on `32:9` / `21:9` ultrawide displays (`aspect_ratio >= 2.2`) and an **`8×4` grid** (`12 px` inner gap, `16 px` outer gap) on `16:9` / `16:10` displays.
-- **Window Operations & Shortcuts:**
-  - `Super+G` (`novos-slippery-tiles overlay`): Launches the interactive gTile-style grid selector overlay.
-  - `Super+Shift+Left/Right/Up/Down` (`novos-slippery-tiles move <dir>`): Moves the active window across grid cells.
-  - `Super+Ctrl+Left/Right/Up/Down` (`novos-slippery-tiles grow <dir>`): Expands the active window span.
-  - `Super+Ctrl+Alt+Left/Right/Up/Down` (`novos-slippery-tiles shrink <dir>`): Shrinks the active window span.
-  - `Super+[` / `Super+]` (`novos-slippery-tiles pack left|right`): Packs the active window against adjacent tiled windows or the screen edge without overlap.
+### 5.2 Standalone `slippery-tiles` Repository (`/srv/devshare/slippery-tiles`)
+> [!NOTE]
+> The `slippery-tiles` adaptive grid window tiling engine has been branched off into its own standalone project repository (`/srv/devshare/slippery-tiles`, exported via [`scripts/export-slippery-tiles.sh`](../scripts/export-slippery-tiles.sh)) and removed from the active NovOS distro tree. Once its standalone implementation is finalized, it can be re-integrated declaratively via [`custom-tools/manifest.yaml`](../custom-tools/manifest.yaml) (`github_release` or `github_source`).

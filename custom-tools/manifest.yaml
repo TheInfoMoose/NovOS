@@ -7,17 +7,17 @@
 schema_version: 1
 
 tools:
-  - name: novos-slippery-tiles
+  - name: novos-custom-tools
     enabled: true
     type: local
-    description: "NovOS Slippery Tile Engine & Interactive gTile Grid Overlay (12x4 / 8x4)"
-    source_path: "target/release/novos-slippery-tiles"
-    build_command: "cargo build --release -p novos-slippery-tiles"
+    description: "NovOS Declarative Custom Tools & GitHub Component Builder"
+    source_path: "target/release/novos-custom-tools"
+    build_command: "cargo build --release -p novos-custom-tools"
     fallback_repo: "https://github.com/theinfomoose/NovOS.git"
     fallback_branch: "main"
-    install_target: "/usr/local/bin/novos-slippery-tiles"
+    install_target: "/usr/local/bin/novos-custom-tools"
     symlinks:
-      - "/usr/local/bin/novos-gtile-overlay"
+      - "/usr/local/bin/novos-ct"
 
   - name: cosmic-comp-ultrawide-patch
     enabled: false

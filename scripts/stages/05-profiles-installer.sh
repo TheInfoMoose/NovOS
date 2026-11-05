@@ -28,9 +28,8 @@ EOF
 chmod +x /etc/profile.d/novos-env.sh
 
 echo "==> [Stage 5.1b] Provisioning novos-custom-tools Binary & /etc/novos/custom-tools.yaml..."
-if ! ([[ -x "${REPO_ROOT}/target/release/novos-custom-tools" && -x "${REPO_ROOT}/target/release/novos-slippery-tiles" ]] && \
-      "${REPO_ROOT}/target/release/novos-custom-tools" --help >/dev/null 2>&1 && \
-      "${REPO_ROOT}/target/release/novos-slippery-tiles" --help >/dev/null 2>&1); then
+if ! ([[ -x "${REPO_ROOT}/target/release/novos-custom-tools" ]] && \
+      "${REPO_ROOT}/target/release/novos-custom-tools" --help >/dev/null 2>&1); then
     if ! command -v cargo >/dev/null 2>&1; then
         apt-get update
         apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y cargo rustc
@@ -40,8 +39,6 @@ if ! ([[ -x "${REPO_ROOT}/target/release/novos-custom-tools" && -x "${REPO_ROOT}
 fi
 
 install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" /usr/local/bin/novos-custom-tools
-install -m 0755 "${REPO_ROOT}/target/release/novos-slippery-tiles" /usr/local/bin/novos-slippery-tiles
-ln -sfn /usr/local/bin/novos-slippery-tiles /usr/local/bin/novos-gtile-overlay
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools.yaml
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools/manifest.yaml
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /usr/share/novos/custom-tools/manifest.yaml

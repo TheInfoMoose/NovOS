@@ -103,7 +103,7 @@ trap cleanup EXIT
 verify_host_deps "iso"
 
 ensure_host_rust_binaries() {
-    if [[ -x "${REPO_ROOT}/target/release/novos-slippery-tiles" && -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
+    if [[ -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
         return 0
     fi
     local cargo_bin=""
@@ -158,8 +158,7 @@ mount_existing_tree() {
     if [[ -f "${REPO_ROOT}/Cargo.lock" ]]; then
         cp -f "${REPO_ROOT}/Cargo.lock" "${MOUNT_ROOT}/root/novos-build/Cargo.lock"
     fi
-    if [[ -f "${REPO_ROOT}/target/release/novos-slippery-tiles" && -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-        install -m 0755 "${REPO_ROOT}/target/release/novos-slippery-tiles" "${MOUNT_ROOT}/root/novos-build/target/release/novos-slippery-tiles"
+    if [[ -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
         install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
     fi
     cp -f "${SCRIPT_DIR}/lib/verify-deps.sh" "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"

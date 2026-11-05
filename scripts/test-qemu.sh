@@ -12,7 +12,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${REPO_ROOT}/config/build.env"
 
 ISO_DRIVE="${ISO_PATH:-./build/NovOS-sid-amd64.iso}"
-TARGET_DISK="${REPO_ROOT}/build/novos-calamares-target.img"
+if [[ -n "${NOVOS_VM_STORAGE_DIR:-}" ]]; then
+    VM_STORAGE_DIR="${NOVOS_VM_STORAGE_DIR}"
+elif [[ -d "/srv/docker-vms" && -w "/srv/docker-vms" ]]; then
+    VM_STORAGE_DIR="/srv/docker-vms"
+else
+    VM_STORAGE_DIR="${REPO_ROOT}/build"
+fi
+TARGET_DISK=""
+CUSTOM_VM_DIR=""
 DISK_SIZE_GIB="64"
 RAM_MB="8192"
 CPUS="4"
@@ -31,6 +39,11 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --iso)
             ISO_DRIVE="$2"
+            shift 2
+            ;;
+        --vm-dir)
+            CUSTOM_VM_DIR="$2"
+            VM_STORAGE_DIR="$2"
             shift 2
             ;;
         --disk)
@@ -99,6 +112,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -n "$CUSTOM_VM_DIR" ]]; then
+    VM_STORAGE_DIR="$(realpath -m "$CUSTOM_VM_DIR" 2>/dev/null || echo "$CUSTOM_VM_DIR")"
+fi
+if [[ -z "$TARGET_DISK" ]]; then
+    TARGET_DISK="${VM_STORAGE_DIR}/novos-calamares-target.img"
+fi
+VARS_DIR="${VM_STORAGE_DIR}"
+
 if [[ "$TIER" != "live-boot" && "$TIER" != "install-e2e" ]]; then
     echo "[ERROR] Invalid --tier '${TIER}' (expected 'live-boot' or 'install-e2e')." >&2
     exit 1
@@ -131,10 +152,18 @@ if [[ "$USE_DOCKER" == "true" ]]; then
     if [[ "$SKIP_VARIANCE_CHECK" != "true" && "$DRY_RUN" != "true" ]]; then
         "${REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --iso "$ISO_DRIVE"
     fi
+    export NOVOS_VM_HOST_DIR="${VM_STORAGE_DIR}"
+    if grep -q '\${NOVOS_VM_HOST_DIR:-[^}]*:/vms}' "${REPO_ROOT}/docker/docker-compose.ci.yml" 2>/dev/null && [[ "$NOVOS_VM_HOST_DIR" != *":/vms" ]]; then
+        export NOVOS_VM_HOST_DIR="${VM_STORAGE_DIR}:/vms"
+    fi
     DOCKER_ISO_DRIVE="${ISO_DRIVE/#${REPO_ROOT}\//./}"
-    DOCKER_TARGET_DISK="${TARGET_DISK/#${REPO_ROOT}\//./}"
+    if [[ "$TARGET_DISK" == "${VM_STORAGE_DIR}/"* ]]; then
+        DOCKER_TARGET_DISK="/vms/${TARGET_DISK#${VM_STORAGE_DIR}/}"
+    else
+        DOCKER_TARGET_DISK="${TARGET_DISK/#${REPO_ROOT}\//./}"
+    fi
     exec docker compose -f "${REPO_ROOT}/docker/docker-compose.ci.yml" run --rm --service-ports novos-qemu-tester \
-        --iso "$DOCKER_ISO_DRIVE" --disk "$DOCKER_TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
+        --iso "$DOCKER_ISO_DRIVE" --vm-dir /vms --disk "$DOCKER_TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
 fi
 
 if [[ "$USE_HEADLESS" == "true" ]]; then
@@ -142,17 +171,17 @@ if [[ "$USE_HEADLESS" == "true" ]]; then
         "${REPO_ROOT}/scripts/nebulous-ctl.py" verify-variance --iso "$ISO_DRIVE"
     fi
     exec python3 "${REPO_ROOT}/scripts/test-docker-qemu.py" \
-        --iso "$ISO_DRIVE" --disk "$TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
+        --iso "$ISO_DRIVE" --vm-dir "$VM_STORAGE_DIR" --disk "$TARGET_DISK" --tier "$TIER" "${HARNESS_EXTRA_ARGS[@]}"
 fi
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci >/dev/null 2>&1; }; then
+if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || { ! command -v apt-get >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1 && ! pacman -Q qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci >/dev/null 2>&1; }; then
     echo "Installing QEMU/KVM and OVMF UEFI firmware..."
-    if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -Sy --noconfirm --needed qemu-system-x86 qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci edk2-ovmf
-    elif command -v apt-get >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm --needed qemu-system-x86 qemu-ui-gtk qemu-hw-display-virtio-vga qemu-hw-display-virtio-vga-gl qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci edk2-ovmf
     else
-        echo "[ERROR] Missing QEMU/OVMF dependencies and no supported package manager (pacman/apt-get) found." >&2
+        echo "[ERROR] Missing QEMU/OVMF dependencies and no supported package manager (apt-get/pacman) found." >&2
         exit 1
     fi
 fi
@@ -177,7 +206,6 @@ done
 
 UEFI_ARGS=()
 if [[ -n "$OVMF_CODE" && -n "$OVMF_VARS_TEMPLATE" ]]; then
-    VARS_DIR="${REPO_ROOT}/build"
     if [[ ! -d "$VARS_DIR" ]] || [[ ! -w "$VARS_DIR" ]]; then
         sudo mkdir -p "$VARS_DIR"
         sudo chown "${USER}:$(id -gn)" "$VARS_DIR"

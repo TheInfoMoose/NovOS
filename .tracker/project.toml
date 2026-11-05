@@ -151,19 +151,6 @@ files = [
 ]
 
 [[components.registry]]
-id = "novos_slippery_tiles"
-name = "novos-slippery-tiles"
-relative_path = "crates/novos-slippery-tiles"
-component_type = "rust_crate"
-tech_stack = ["rust"]
-tags = []
-flags = []
-files = [
-    "crates/novos-slippery-tiles/Cargo.toml",
-    "crates/novos-slippery-tiles/src/main.rs",
-]
-
-[[components.registry]]
 id = "scripts"
 name = "scripts"
 relative_path = "scripts"

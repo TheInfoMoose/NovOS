@@ -6,12 +6,13 @@ Implements a standard Model Context Protocol (MCP) JSON-RPC 2.0 server over
 stdio (`initialize`, `notifications/initialized`, `ping`, `tools/list`,
 `tools/call`) plus a built-in `--self-test` suite.
 
-Exposes 5 typed MCP tools for autonomous, guardrailed CI/CD orchestration:
+Exposes 6 typed MCP tools for autonomous, guardrailed CI/CD orchestration:
   1. `nebulous_get_status`
   2. `nebulous_verify_variance`
   3. `nebulous_run_docker_build`
   4. `nebulous_run_qemu_test`
   5. `nebulous_record_diagnostic`
+  6. `nebulous_consult_local_llm`
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ import sys
 import tempfile
 import tomllib
 import unittest
+import urllib.error
+import urllib.request
 from typing import Any
 
 EXIT_OK = 0
@@ -62,6 +65,8 @@ DEFAULT_GOLDEN_TOML = REPO_ROOT / ".nebulous" / "golden-snapshot.toml"
 DEFAULT_APPROVALS_TOML = REPO_ROOT / ".nebulous" / "approvals.toml"
 DEFAULT_ISO_PATH = REPO_ROOT / "build" / "NovOS-sid-amd64.iso"
 DEFAULT_ITEM_TOML = REPO_ROOT / ".nebulous" / "items" / "item-001-docker-qemu-ci.toml"
+DEFAULT_LLM_ENDPOINT = os.environ.get("NOVOS_LLM_ENDPOINT", "http://127.0.0.1:8081/v1")
+DEFAULT_LLM_MODEL = os.environ.get("NOVOS_LLM_MODEL", "Qwen3-14B-Q4_K_M.gguf")
 LOGS_DIR = REPO_ROOT / "logs"
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -201,6 +206,10 @@ def write_item_toml_with_diagnostics(item_data: dict[str, Any], path: pathlib.Pa
             "timestamp",
             "hypothesis",
             "root_cause",
+            "subsystem",
+            "recommended_fix",
+            "violates_negative_constraints",
+            "llm_model",
             "diff_fingerprint",
             "proposed_files",
             "prior_failed_overlap",
@@ -570,6 +579,44 @@ class NebulousCiMcpServer:
                         },
                     },
                     "required": ["item_id", "hypothesis"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "nebulous_consult_local_llm",
+                "description": (
+                    "Query the local llama.cpp Qwen3-14B server (/v1/chat/completions) with "
+                    "bounded failure logs and active negative_constraints from Item.toml, "
+                    "record the resulting diagnostic hypothesis into Item.toml ([[diagnostics]]), "
+                    "and return the structured diagnosis alongside active NEGATIVE_CONSTRAINTS."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {
+                            "type": "string",
+                            "description": "Target item ID or path (e.g. 'item-001-docker-qemu-ci').",
+                        },
+                        "error_summary": {
+                            "type": "string",
+                            "description": "Concise failure summary from build or QEMU test run.",
+                        },
+                        "log_file": {
+                            "type": "string",
+                            "description": "Optional path to build or serial log file to extract tail context.",
+                        },
+                        "proposed_files": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of file paths proposed for modification.",
+                        },
+                        "llm_endpoint": {
+                            "type": "string",
+                            "default": DEFAULT_LLM_ENDPOINT,
+                            "description": "Optional OpenAI-compatible llama.cpp endpoint (default: NOVOS_LLM_ENDPOINT or http://127.0.0.1:8081/v1).",
+                        },
+                    },
+                    "required": ["item_id", "error_summary"],
                     "additionalProperties": False,
                 },
             },
@@ -1294,6 +1341,215 @@ class NebulousCiMcpServer:
         }
 
     # --------------------------------------------------------------------------
+    # Tool 6: `nebulous_consult_local_llm`
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_llm_json_content(raw_content: Any) -> dict[str, Any]:
+        """Extract a JSON object from LLM message content, stripping <think> blocks or markdown fences."""
+        if isinstance(raw_content, dict):
+            return raw_content
+        if not isinstance(raw_content, str):
+            return {}
+        cleaned = re.sub(r"(?is)<think>.*?</think>", "", raw_content).strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if 0 <= start < end:
+                try:
+                    parsed = json.loads(cleaned[start : end + 1])
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+        return {}
+
+    def tool_consult_local_llm(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        item_id = arguments.get("item_id")
+        error_summary = strip_ansi(str(arguments.get("error_summary", ""))).strip()
+        if not error_summary:
+            raise ValueError("'error_summary' is required and cannot be empty")
+
+        raw_log_file = arguments.get("log_file")
+        proposed_files = [
+            str(f).strip() for f in arguments.get("proposed_files", []) if str(f).strip()
+        ]
+        raw_endpoint = arguments.get("llm_endpoint")
+        base_endpoint = (
+            str(raw_endpoint).strip()
+            if raw_endpoint is not None and str(raw_endpoint).strip()
+            else os.environ.get("NOVOS_LLM_ENDPOINT", DEFAULT_LLM_ENDPOINT)
+        ).rstrip("/")
+        chat_url = (
+            base_endpoint
+            if base_endpoint.endswith("/chat/completions")
+            else f"{base_endpoint}/chat/completions"
+        )
+        model_name = os.environ.get("NOVOS_LLM_MODEL", DEFAULT_LLM_MODEL)
+
+        item_path = self.resolve_item_path(item_id)
+        raw = load_toml_file(item_path)
+        item_sec = dict(raw.get("item", {}))
+        attempts = list(raw.get("attempts") or item_sec.get("attempts", []))
+        diagnostics = list(raw.get("diagnostics") or item_sec.get("diagnostics", []))
+        neg_constraints = list(item_sec.get("negative_constraints", []))
+
+        log_tail = ""
+        resolved_log_path_str = ""
+        if raw_log_file:
+            log_path = self._resolve_repo_path(str(raw_log_file))
+            resolved_log_path_str = str(log_path)
+            if log_path.is_file():
+                try:
+                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines(True)
+                    log_tail = strip_ansi("".join(lines[-40:]))[-4000:].strip()
+                except OSError:
+                    log_tail = ""
+
+        req_payload = {
+            "model": model_name,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a NovOS Linux kernel/UEFI/COSMIC CI diagnostic assistant. "
+                        "Respond ONLY with a valid JSON object matching: "
+                        '{"root_cause": "...", "subsystem": "...", "recommended_fix": "...", '
+                        '"violates_negative_constraints": false}. '
+                        "Never recommend dropping packages, downgrading versions, or repeating "
+                        "approaches forbidden by negative_constraints."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "error_summary": error_summary[:1000],
+                            "log_tail": log_tail,
+                            "proposed_files": proposed_files,
+                            "negative_constraints": neg_constraints,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+
+        llm_available = False
+        llm_error = ""
+        parsed_diag: dict[str, Any] = {}
+
+        try:
+            req = urllib.request.Request(
+                chat_url,
+                data=json.dumps(req_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15.0) as resp:
+                raw_body = resp.read().decode("utf-8", errors="replace")
+            resp_json = json.loads(raw_body)
+            choices = resp_json.get("choices")
+            if isinstance(choices, list) and choices:
+                msg_content = choices[0].get("message", {}).get("content", "")
+                parsed_diag = self._parse_llm_json_content(msg_content)
+            elif isinstance(resp_json, dict) and "root_cause" in resp_json:
+                parsed_diag = resp_json
+            llm_available = True
+        except Exception as exc:
+            llm_available = False
+            llm_error = str(exc)
+
+        root_cause = strip_ansi(str(parsed_diag.get("root_cause", ""))).strip() or (
+            f"Offline fallback diagnosis for: {error_summary}"
+        )
+        subsystem = strip_ansi(str(parsed_diag.get("subsystem", ""))).strip() or "unspecified"
+        recommended_fix = strip_ansi(str(parsed_diag.get("recommended_fix", ""))).strip() or (
+            "Inspect log tail and stage scripts while obeying active NEGATIVE_CONSTRAINTS."
+        )
+        violates_neg = bool(parsed_diag.get("violates_negative_constraints", False))
+
+        diff_fp, detected_files = compute_diff_fingerprint(
+            self.repo_root,
+            proposed_diff=None,
+            proposed_files=proposed_files,
+        )
+        failed_attempts = [a for a in attempts if a.get("status") == "fail"]
+        prior_failed_overlap = any(
+            a.get("diff_fingerprint") == diff_fp and diff_fp not in ("", "clean", "none")
+            for a in failed_attempts
+        )
+
+        hypothesis_text = (
+            f"[Qwen3-14B:{subsystem}] {recommended_fix}"
+            if llm_available
+            else f"[LLM-Offline:{subsystem}] {error_summary}"
+        )
+
+        diag_entry = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "hypothesis": hypothesis_text,
+            "root_cause": root_cause,
+            "subsystem": subsystem,
+            "recommended_fix": recommended_fix,
+            "violates_negative_constraints": violates_neg,
+            "llm_model": model_name,
+            "diff_fingerprint": diff_fp,
+            "proposed_files": detected_files,
+            "prior_failed_overlap": prior_failed_overlap,
+        }
+        diagnostics.append(diag_entry)
+
+        write_item_toml_with_diagnostics(
+            {
+                "item": item_sec,
+                "attempts": attempts,
+                "diagnostics": diagnostics,
+            },
+            item_path,
+        )
+
+        locked = bool(item_sec.get("loop_locked", False))
+        if locked:
+            status_str = "HARD_STOP_LOOP_LOCK"
+        elif violates_neg:
+            status_str = "REJECTED_NEGATIVE_CONSTRAINT_VIOLATION"
+        elif llm_available:
+            status_str = "DIAGNOSED"
+        else:
+            status_str = "LLM_UNAVAILABLE"
+
+        return {
+            "status": status_str,
+            "item_id": item_sec.get("id", item_path.stem),
+            "llm_available": llm_available,
+            "llm_endpoint": chat_url,
+            "llm_model": model_name,
+            "llm_error": llm_error,
+            "log_file": resolved_log_path_str,
+            "log_tail": log_tail,
+            "diagnosis": {
+                "root_cause": root_cause,
+                "subsystem": subsystem,
+                "recommended_fix": recommended_fix,
+                "violates_negative_constraints": violates_neg,
+            },
+            "diagnostic": diag_entry,
+            "loop_locked": locked,
+            "retry_count": int(item_sec.get("retry_count", 0)),
+            "NEGATIVE_CONSTRAINTS": neg_constraints,
+        }
+
+    # --------------------------------------------------------------------------
     # JSON-RPC 2.0 Request Dispatcher & Stdio Framing Support
     # --------------------------------------------------------------------------
 
@@ -1361,12 +1617,19 @@ class NebulousCiMcpServer:
             payload = self.tool_run_qemu_test(args)
         elif name == "nebulous_record_diagnostic":
             payload = self.tool_record_diagnostic(args)
+        elif name == "nebulous_consult_local_llm":
+            payload = self.tool_consult_local_llm(args)
         else:
             raise KeyError(f"Unknown MCP tool: {name}")
 
         is_error = payload.get("status", "").startswith("HARD_STOP_") or payload.get(
             "status"
-        ) in ("BUILD_FAILED", "TEST_FAILED", "REJECTED_DUPLICATE_DIFF")
+        ) in (
+            "BUILD_FAILED",
+            "TEST_FAILED",
+            "REJECTED_DUPLICATE_DIFF",
+            "REJECTED_NEGATIVE_CONSTRAINT_VIOLATION",
+        )
         return {
             "content": [
                 {
@@ -1692,6 +1955,7 @@ class McpNebulousCiSelfTests(unittest.TestCase):
                 "nebulous_run_docker_build",
                 "nebulous_run_qemu_test",
                 "nebulous_record_diagnostic",
+                "nebulous_consult_local_llm",
             ],
         )
 
@@ -1969,6 +2233,133 @@ class McpNebulousCiSelfTests(unittest.TestCase):
             "Verify greetd service unit ordering",
         )
 
+    def test_consult_local_llm_with_mock_http_server(self) -> None:
+        import http.server
+        import threading
+
+        neg_constraint = "LOOP DETECTED [fingerprint=abc123]: DO NOT drop limine package."
+        write_item_toml_with_diagnostics(
+            {
+                "item": {
+                    "id": "item-001-docker-qemu-ci",
+                    "phase_id": "phase-01-ci-foundation",
+                    "title": "Test Item",
+                    "status": "in_progress",
+                    "loop_locked": False,
+                    "retry_count": 2,
+                    "negative_constraints": [neg_constraint],
+                },
+                "attempts": [],
+                "diagnostics": [],
+            },
+            self.item_toml,
+        )
+
+        sample_log = self.tmp_root / "logs" / "serial-failure.log"
+        sample_log.write_text(
+            "BdsDxe: starting Boot0001\n[ERROR] Kernel panic - not syncing: VFS: Unable to mount root fs\n",
+            encoding="utf-8",
+        )
+
+        captured_reqs: list[dict[str, Any]] = []
+
+        class _MockLlamaServer(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                captured_reqs.append({"path": self.path, "body": body})
+                resp_payload = {
+                    "id": "chatcmpl-qwen3-14b",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "root_cause": "Missing live-boot initramfs hook in Stage 6",
+                                        "subsystem": "scripts/stages/06-snapshot-finalize.sh",
+                                        "recommended_fix": "Run update-initramfs -c -k all after installing live-boot",
+                                        "violates_negative_constraints": False,
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+                encoded = json.dumps(resp_payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        httpd = http.server.HTTPServer(("127.0.0.1", 0), _MockLlamaServer)
+        port = httpd.server_port
+        t = threading.Thread(target=httpd.handle_request, daemon=True)
+        t.start()
+
+        server = NebulousCiMcpServer(
+            repo_root=self.tmp_root,
+            nebulous_ctl=NEBULOUS_CTL,
+        )
+        res = server.call_tool(
+            "nebulous_consult_local_llm",
+            {
+                "item_id": "item-001-docker-qemu-ci",
+                "error_summary": "Kernel panic: VFS: Unable to mount root fs",
+                "log_file": "logs/serial-failure.log",
+                "proposed_files": ["scripts/stages/06-snapshot-finalize.sh"],
+                "llm_endpoint": f"http://127.0.0.1:{port}/v1",
+            },
+        )
+        t.join(timeout=3)
+        httpd.server_close()
+
+        self.assertFalse(res["isError"])
+        sc = res["structuredContent"]
+        self.assertEqual(sc["status"], "DIAGNOSED")
+        self.assertTrue(sc["llm_available"])
+        self.assertEqual(
+            sc["diagnosis"]["root_cause"],
+            "Missing live-boot initramfs hook in Stage 6",
+        )
+        self.assertEqual(
+            sc["diagnosis"]["subsystem"],
+            "scripts/stages/06-snapshot-finalize.sh",
+        )
+        self.assertEqual(sc["NEGATIVE_CONSTRAINTS"], [neg_constraint])
+
+        # Verify request sent to mock llama.cpp server
+        self.assertEqual(len(captured_reqs), 1)
+        self.assertEqual(captured_reqs[0]["path"], "/v1/chat/completions")
+        user_msg = json.loads(captured_reqs[0]["body"]["messages"][1]["content"])
+        self.assertIn("Unable to mount root fs", user_msg["log_tail"])
+        self.assertEqual(user_msg["negative_constraints"], [neg_constraint])
+
+        # Verify diagnosis was persisted into Item.toml [[diagnostics]]
+        reloaded = load_toml_file(self.item_toml)
+        diags = reloaded.get("diagnostics", [])
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(
+            diags[0]["root_cause"],
+            "Missing live-boot initramfs hook in Stage 6",
+        )
+        self.assertIn("Qwen3-14B", diags[0]["hypothesis"])
+
+        # Verify Qwen3 <think> blocks and markdown code fences are parsed cleanly
+        parsed_fenced = server._parse_llm_json_content(
+            "<think>Checking initramfs hooks...</think>\n```json\n"
+            '{"root_cause": "live-boot missing", "subsystem": "stage-06", '
+            '"recommended_fix": "update-initramfs", "violates_negative_constraints": false}\n```'
+        )
+        self.assertEqual(parsed_fenced.get("root_cause"), "live-boot missing")
+        self.assertEqual(parsed_fenced.get("subsystem"), "stage-06")
+
     def test_strict_input_schema_validation(self) -> None:
         server = NebulousCiMcpServer(repo_root=self.tmp_root)
         # Missing required item_id
@@ -2023,7 +2414,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="Run built-in unit tests for MCP JSON-RPC 2.0 protocol and all 5 Nebulous CI tools",
+        help="Run built-in unit tests for MCP JSON-RPC 2.0 protocol and all 6 Nebulous CI tools",
     )
     return parser
 

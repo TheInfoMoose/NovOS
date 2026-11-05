@@ -133,7 +133,6 @@ check_file /usr/local/bin/cosmic-session-launch
 check_file /usr/local/bin/novos-wallpaper-auto
 check_file /usr/local/bin/novos-setup
 check_file /usr/local/bin/novos-llm-stack
-check_file /usr/local/bin/novos-slippery-tiles
 check_file /usr/local/bin/novos-custom-tools
 check_file /usr/local/bin/novos-sec-box
 check_file /etc/novos/custom-tools.yaml

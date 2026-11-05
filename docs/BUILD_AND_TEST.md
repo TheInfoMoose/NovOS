@@ -147,14 +147,28 @@ python3 calamares/modules/limine-bootloader/main.py --self-test
 
 ---
 
-## 7. Dockerized Clean-Room Build & Dual-Mode QEMU/KVM Verification
+## 7. Dockerized Clean-Room Build, Containerized QEMU (`/srv/docker-vms`) & Local LLM Host (`/srv/docker-llms`)
 
-[`docker/docker-compose.ci.yml`](../docker/docker-compose.ci.yml) defines two isolated container services so full Stage 1–6 ISO builds and UEFI QEMU/KVM tests run reproducibly without mutating the host operating system:
+[`docker/docker-compose.ci.yml`](../docker/docker-compose.ci.yml) defines three isolated container services on the Pop!_OS workstation so full Stage 1–6 ISO builds, UEFI QEMU/KVM verification runs, and local `llama.cpp` (`Qwen3-14B-Q4_K_M.gguf`) self-healing root-cause diagnostics run reproducibly without mutating the host operating system:
 
-| Service | Dockerfile | Key Mounts / Devices / Ports | Purpose |
+| Service | Image / Dockerfile | Key Mounts / Devices / Ports | Purpose |
 | :--- | :--- | :--- | :--- |
 | **`novos-builder`** | [`docker/Dockerfile.builder`](../docker/Dockerfile.builder) | `privileged: true`, `..:/workspace`, `../build/cache/apt:/cache/apt`, `../build/cache/cargo:/cache/cargo` | Runs fresh Stage 1–6 `build-novos.sh` clean-room ISO builds with persistent APT & Cargo caches. |
-| **`novos-qemu-tester`** | [`docker/Dockerfile.qemu-tester`](../docker/Dockerfile.qemu-tester) | `/dev/kvm:/dev/kvm`, `127.0.0.1:5900:5900` (VNC), `127.0.0.1:6080:6080` (noVNC), `..:/workspace` | Runs [`scripts/test-docker-qemu.py`](../scripts/test-docker-qemu.py) against `./build/NovOS-sid-amd64.iso` with UEFI OVMF firmware, QMP socket telemetry, and optional VNC/noVNC visual inspection. |
+| **`novos-qemu-tester`** | [`docker/Dockerfile.qemu-tester`](../docker/Dockerfile.qemu-tester) | `/dev/kvm:/dev/kvm`, `/dev/dri:/dev/dri`, `127.0.0.1:5900:5900` (VNC), `127.0.0.1:6080:6080` (noVNC), `..:/workspace`, `/srv/docker-vms:/vms` | Runs [`scripts/test-docker-qemu.py`](../scripts/test-docker-qemu.py) against `./build/NovOS-sid-amd64.iso` storing persistent 64 GiB VirtIO target disks (`novos-calamares-target.img`), OVMF NVRAM vars (`ovmf_vars.fd`), and QMP artifacts in `/srv/docker-vms`. |
+| **`novos-llm-host`** | `ghcr.io/ggml-org/llama.cpp:server-vulkan` | `/dev/dri:/dev/dri`, `/dev/kfd:/dev/kfd`, `127.0.0.1:8081:8080`, `/srv/docker-llms:/models` | Hosts `Qwen3-14B-Q4_K_M.gguf` on port `8081` (`http://127.0.0.1:8081/v1`) with RDNA 4 (`gfx1201`) Vulkan/ROCm GPU offload (`-ngl 99 -c 16384 --flash-attn`) for automated failure log diagnostics. |
+
+### Pop!_OS Host Environment Setup (`scripts/setup-popos-test-env.sh`)
+
+```bash
+# 1. Verify /dev/kvm, /dev/dri, /dev/kfd, /srv/docker-vms, and /srv/docker-llms status:
+./scripts/setup-popos-test-env.sh --status
+
+# 2. Download Qwen3-14B-Q4_K_M.gguf into /srv/docker-llms:
+./scripts/setup-popos-test-env.sh --pull-model
+
+# 3. Start the novos-llm-host container (port 8081) and build novos-qemu-tester:
+./scripts/setup-popos-test-env.sh --start-llm
+```
 
 ### Containerized Build & Verification Commands
 
@@ -171,7 +185,7 @@ docker compose -f docker/docker-compose.ci.yml run --rm novos-qemu-tester \
 docker compose -f docker/docker-compose.ci.yml run --rm --service-ports novos-qemu-tester \
   ./scripts/test-docker-qemu.py --iso ./build/NovOS-sid-amd64.iso --tier live-boot --vnc
 
-# 4. Tier 2 (install-e2e): Full installation to 64 GiB VirtIO target disk + installed reboot check:
+# 4. Tier 2 (install-e2e): Full installation to 64 GiB VirtIO target disk (/srv/docker-vms) + installed reboot check:
 docker compose -f docker/docker-compose.ci.yml run --rm novos-qemu-tester \
   ./scripts/test-docker-qemu.py --iso ./build/NovOS-sid-amd64.iso --tier install-e2e --no-vnc
 ```
@@ -184,11 +198,13 @@ docker compose -f docker/docker-compose.ci.yml run --rm novos-qemu-tester \
 | `--tier <live-boot\|install-e2e>` | `live-boot` | Verification tier (`live-boot` 420s timeout; `install-e2e` 1200s timeout) |
 | `--vnc` / `--no-vnc` | `--no-vnc` | Enable VNC (`:5900`) + noVNC (`:6080`) or run headless (`-display none`) with QMP `screendump` |
 | `--item <path>` | `.nebulous/items/item-001-docker-qemu-ci.toml` | Tiered `Item.toml` state file updated with attempt telemetry |
+| `--vm-dir <dir>` | `/vms` or `/srv/docker-vms` | Persistent VM storage directory for `novos-calamares-target.img` and `ovmf_vars.fd` |
+| `--llm-endpoint <url>` | `http://127.0.0.1:8081/v1` | OpenAI-compatible `llama.cpp` endpoint (`http://novos-llm-host:8080/v1` inside container) |
 | `--ram <MiB>` | `8192` | Guest memory allocation in MiB |
 | `--cpus <N>` | `4` | Guest vCPU count |
-| `--disk <path>` | `./build/novos-calamares-target.img` | Target VirtIO disk image (`64 GiB` `qcow2`) |
+| `--disk <path>` | `<vm-dir>/novos-calamares-target.img` | Target VirtIO disk image (`64 GiB` `qcow2`) |
 | `--dry-run` | `false` | Print constructed QEMU command, QMP socket path, and milestone plan without booting |
-| `--self-test` | `false` | Run built-in unit tests for QMP commands, PPM/PNG analysis, OVMF discovery, and Nebulous telemetry |
+| `--self-test` | `false` | Run built-in unit tests for QMP commands, PPM/PNG analysis, OVMF discovery, `/srv/docker-vms` resolution, and local LLM telemetry |
 
 ---
 
@@ -237,10 +253,11 @@ NovOS enforces deterministic state tracking and anti-regression guardrails throu
 
 ### 8.3 Stdio MCP Server (`scripts/mcp_nebulous_ci.py`)
 
-[`scripts/mcp_nebulous_ci.py`](../scripts/mcp_nebulous_ci.py) exposes 5 typed JSON-RPC 2.0 MCP tools over stdio (configured in [`.agents/mcp.json`](../.agents/mcp.json)):
+[`scripts/mcp_nebulous_ci.py`](../scripts/mcp_nebulous_ci.py) exposes 6 typed JSON-RPC 2.0 MCP tools over stdio (configured in [`.agents/mcp.json`](../.agents/mcp.json)):
 
 - `nebulous_get_status`: Returns current phase/item state, `retry_count`, `loop_locked`, `negative_constraints`, and repo variance status.
 - `nebulous_verify_variance`: Runs `nebulous-ctl.py verify-variance` and returns structured `HARD_STOP_VARIANCE_LOCK` errors on any unapproved removal or downgrade.
 - `nebulous_run_docker_build`: Verifies the item is not loop-locked, runs the clean-room Stage 1–6 build inside `novos-builder`, and enforces post-build variance verification.
 - `nebulous_run_qemu_test`: Runs `test-docker-qemu.py` (`live-boot` or `install-e2e`) inside `novos-qemu-tester` and returns structured milestone/screendump telemetry.
 - `nebulous_record_diagnostic`: Records diagnostic attempts and triggers loop-breaker negative constraints if a failed diff is repeated.
+- `nebulous_consult_local_llm`: Queries the local `llama.cpp` server (`Qwen3-14B-Q4_K_M.gguf` on `http://127.0.0.1:8081/v1`) with failure logs and active `negative_constraints`, records the structured diagnostic hypothesis into `Item.toml` (`[[diagnostics]]`), and returns the root-cause analysis.

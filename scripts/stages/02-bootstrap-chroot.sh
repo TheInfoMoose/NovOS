@@ -43,7 +43,7 @@ fi
 if [[ -d "${REPO_ROOT}/calamares" ]]; then
     cp -rf "${REPO_ROOT}/calamares" "${MOUNT_ROOT}/root/novos-build/"
 fi
-if [[ ! -x "${REPO_ROOT}/target/release/novos-slippery-tiles" || ! -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
+if [[ ! -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
     CARGO_BIN=""
     SUDO_HOME=""
     if [[ -n "${SUDO_USER:-}" ]]; then
@@ -67,8 +67,7 @@ if [[ ! -x "${REPO_ROOT}/target/release/novos-slippery-tiles" || ! -x "${REPO_RO
         fi
     fi
 fi
-if [[ -f "${REPO_ROOT}/target/release/novos-slippery-tiles" && -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-    install -m 0755 "${REPO_ROOT}/target/release/novos-slippery-tiles" "${MOUNT_ROOT}/root/novos-build/target/release/novos-slippery-tiles"
+if [[ -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
     install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
 fi
 cp -f "${SCRIPT_DIR}/../lib/verify-deps.sh" "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"

@@ -227,10 +227,8 @@ fn strip_yaml_comment(line: &str) -> &str {
         match ch {
             '"' => in_double = true,
             '\'' => in_single = true,
-            '#' => {
-                if idx == 0 || line.as_bytes()[idx - 1].is_ascii_whitespace() {
-                    return &line[..idx];
-                }
+            '#' if idx == 0 || line.as_bytes()[idx - 1].is_ascii_whitespace() => {
+                return &line[..idx];
             }
             _ => {}
         }
@@ -382,9 +380,9 @@ pub fn fallback_yaml_load(text: &str) -> ManifestData {
         }
 
         if let Some(current_item) = root.tools.last_mut() {
-            if stripped.starts_with("- ") {
+            if let Some(rest) = stripped.strip_prefix("- ") {
                 if let Some(ref sub_k) = current_sublist_key {
-                    let val = parse_scalar(stripped[2..].trim());
+                    let val = parse_scalar(rest.trim());
                     if let Some(ToolFieldValue::List(list)) = current_item.get_mut(sub_k) {
                         list.push(val);
                     }
@@ -792,7 +790,8 @@ fn install_binary_mode_755(src: &Path, dst: &Path) -> Result<(), String> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::copy(src, dst).map_err(|e| format!("Failed copying {} to {}: {e}", src.display(), dst.display()))?;
+    fs::copy(src, dst)
+        .map_err(|e| format!("Failed copying {} to {}: {e}", src.display(), dst.display()))?;
     let mut perms = fs::metadata(dst).map_err(|e| e.to_string())?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(dst, perms).map_err(|e| e.to_string())?;
@@ -813,7 +812,7 @@ pub fn execute_tool_install(
     let ttype = plan.tool_type.as_str();
     let target = PathBuf::from(&plan.install_target);
 
-        if ttype == "local" {
+    if ttype == "local" {
         let mut src_abs = PathBuf::from(plan.source_path.as_deref().unwrap_or(""));
         if !src_abs.is_file() {
             if let Some(bcmd) = entry.get("build_command").and_then(|v| v.as_str()) {
@@ -909,15 +908,28 @@ pub fn execute_tool_install(
 
     if ttype == "github_release" {
         let api_url = plan.api_url.clone().unwrap_or_default();
-        let pattern = plan.asset_pattern.clone().unwrap_or_else(|| ".*".to_string());
-        let fmt = plan.asset_format.clone().unwrap_or_else(|| "binary".to_string());
+        let pattern = plan
+            .asset_pattern
+            .clone()
+            .unwrap_or_else(|| ".*".to_string());
+        let fmt = plan
+            .asset_format
+            .clone()
+            .unwrap_or_else(|| "binary".to_string());
 
         let out = Command::new("curl")
-            .args(["-fsSL", "-H", "User-Agent: NovOS-Custom-Tools/1.0", &api_url])
+            .args([
+                "-fsSL",
+                "-H",
+                "User-Agent: NovOS-Custom-Tools/1.0",
+                &api_url,
+            ])
             .output()
             .map_err(|e| format!("Failed invoking curl for {api_url}: {e}"))?;
         if !out.status.success() {
-            return Err(format!("Failed fetching GitHub release metadata from {api_url}"));
+            return Err(format!(
+                "Failed fetching GitHub release metadata from {api_url}"
+            ));
         }
         let body = String::from_utf8_lossy(&out.stdout);
         let (matched_name, matched_url) = match_release_asset(&body, &pattern)
@@ -1047,7 +1059,11 @@ impl RegexAtom {
             RegexAtom::Space => c.is_ascii_whitespace(),
             RegexAtom::CharSet(chars, negated) => {
                 let found = chars.contains(&c);
-                if *negated { !found } else { found }
+                if *negated {
+                    !found
+                } else {
+                    found
+                }
             }
         }
     }
@@ -1064,9 +1080,7 @@ enum Quantifier {
 fn compile_simple_regex(pattern: &str) -> (bool, bool, Vec<(RegexAtom, Quantifier)>) {
     let anchored_start = pattern.starts_with('^');
     let anchored_end = pattern.ends_with('$') && !pattern.ends_with("\\$");
-    let core = pattern
-        .strip_prefix('^')
-        .unwrap_or(pattern);
+    let core = pattern.strip_prefix('^').unwrap_or(pattern);
     let core = if anchored_end {
         &core[..core.len() - 1]
     } else {
@@ -1249,7 +1263,9 @@ pub fn resolve_default_manifest(explicit: Option<&Path>) -> PathBuf {
             anc = parent;
         }
     }
-    candidates.push(PathBuf::from("/root/novos-build/custom-tools/manifest.yaml"));
+    candidates.push(PathBuf::from(
+        "/root/novos-build/custom-tools/manifest.yaml",
+    ));
     candidates.push(PathBuf::from("/etc/novos/custom-tools/manifest.yaml"));
     candidates.push(PathBuf::from("/usr/share/novos/custom-tools/manifest.yaml"));
 
@@ -1301,10 +1317,10 @@ pub fn test_default_manifest_validates() -> Result<(), String> {
     }
 
     let st = by_name
-        .get("novos-slippery-tiles")
-        .ok_or_else(|| "Missing novos-slippery-tiles".to_string())?;
+        .get("novos-custom-tools")
+        .ok_or_else(|| "Missing novos-custom-tools".to_string())?;
     if st.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
-        return Err("Expected novos-slippery-tiles to be enabled".to_string());
+        return Err("Expected novos-custom-tools to be enabled".to_string());
     }
     if !by_name.contains_key("cosmic-comp-ultrawide-patch") {
         return Err("Missing cosmic-comp-ultrawide-patch".to_string());
@@ -1335,7 +1351,7 @@ pub fn test_fallback_yaml_parser_parity() -> Result<(), String> {
         .get("symlinks")
         .and_then(|v| v.as_list())
         .ok_or_else(|| "Missing symlinks on first tool".to_string())?;
-    if symlinks.len() != 1 || symlinks[0].as_str() != Some("/usr/local/bin/novos-gtile-overlay") {
+    if symlinks.len() != 1 || symlinks[0].as_str() != Some("/usr/local/bin/novos-ct") {
         return Err(format!("Unexpected symlinks: {symlinks:?}"));
     }
 
@@ -1346,9 +1362,9 @@ tools:
   - name: inline-test # inline comment on name
     enabled: true # inline comment on bool
     type: local # inline comment on type
-    source_path: "target/release/novos-slippery-tiles" # comment after quoted string with #hash inside
-    install_target: "/usr/local/bin/novos-slippery-tiles"
-    symlinks: ["/usr/local/bin/novos-gtile-overlay", "/usr/local/bin/novos-gtile"] # flow list
+    source_path: "target/release/novos-custom-tools" # comment after quoted string with #hash inside
+    install_target: "/usr/local/bin/novos-custom-tools"
+    symlinks: ["/usr/local/bin/novos-ct", "/usr/local/bin/novos-custom"] # flow list
 "#;
     let inline_data = fallback_yaml_load(inline_yaml);
     let (i_ok, i_errs) = validate_manifest_data(&inline_data);
@@ -1375,7 +1391,10 @@ pub fn test_execution_plans_for_all_tool_types() -> Result<(), String> {
         let plan = build_execution_plan(entry, &repo_root)?;
         let expected_name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
         if plan.name != expected_name {
-            return Err(format!("Plan name mismatch: {} != {}", plan.name, expected_name));
+            return Err(format!(
+                "Plan name mismatch: {} != {}",
+                plan.name, expected_name
+            ));
         }
         if plan.steps.is_empty() {
             return Err(format!("Plan for {} has no steps", plan.name));
@@ -1428,8 +1447,10 @@ pub fn test_execution_plans_for_all_tool_types() -> Result<(), String> {
         {"browser_download_url": "https://github.com/cosmic-utils/tweaks/releases/download/v0.1.0/cosmic-ext-tweaks-0.1.0-x86_64-unknown-linux-gnu.tar.gz"}
       ]
     }"#;
-    let matched = match_release_asset(sample_gh_json, ".*x86_64.*\\.tar\\.gz$")
-        .ok_or_else(|| "Expected .*x86_64.*\\.tar\\.gz$ to match x86_64 tar.gz asset".to_string())?;
+    let matched =
+        match_release_asset(sample_gh_json, ".*x86_64.*\\.tar\\.gz$").ok_or_else(|| {
+            "Expected .*x86_64.*\\.tar\\.gz$ to match x86_64 tar.gz asset".to_string()
+        })?;
     if matched.0 != "cosmic-ext-tweaks-0.1.0-x86_64-unknown-linux-gnu.tar.gz" {
         return Err(format!("Unexpected matched asset: {matched:?}"));
     }
@@ -1469,15 +1490,26 @@ pub fn test_invalid_manifest_rejected() -> Result<(), String> {
     Ok(())
 }
 
+type SelfTestFn = fn() -> Result<(), String>;
+
 pub fn run_self_tests() -> i32 {
-    let tests: [(&str, fn() -> Result<(), String>); 4] = [
-        ("test_default_manifest_validates", test_default_manifest_validates),
-        ("test_fallback_yaml_parser_parity", test_fallback_yaml_parser_parity),
+    let tests: [(&str, SelfTestFn); 4] = [
+        (
+            "test_default_manifest_validates",
+            test_default_manifest_validates,
+        ),
+        (
+            "test_fallback_yaml_parser_parity",
+            test_fallback_yaml_parser_parity,
+        ),
         (
             "test_execution_plans_for_all_tool_types",
             test_execution_plans_for_all_tool_types,
         ),
-        ("test_invalid_manifest_rejected", test_invalid_manifest_rejected),
+        (
+            "test_invalid_manifest_rejected",
+            test_invalid_manifest_rejected,
+        ),
     ];
 
     let mut failed = 0usize;

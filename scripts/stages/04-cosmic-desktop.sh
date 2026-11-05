@@ -621,11 +621,10 @@ provision_cosmic_theme "/home/${DEFAULT_USER}/.config/cosmic"
 provision_cosmic_theme "/var/lib/cosmic-greeter/.config/cosmic"
 provision_cosmic_theme "/var/lib/greetd/.config/cosmic"
 
-echo "==> [Stage 4.6] Installing NovOS Slippery Tile Engine, gTile Overlay, Custom Tools & COSMIC Keybindings..."
-mkdir -p /usr/local/bin /usr/share/applications /etc/systemd/user /etc/systemd/user/default.target.wants /etc/novos/custom-tools /usr/share/novos/custom-tools
+echo "==> [Stage 4.6] Installing NovOS Custom Tools & Finalizing COSMIC Permissions..."
+mkdir -p /usr/local/bin /etc/novos/custom-tools /usr/share/novos/custom-tools
 
-if ! ([[ -x /root/novos-build/target/release/novos-slippery-tiles && -x /root/novos-build/target/release/novos-custom-tools ]] && \
-      /root/novos-build/target/release/novos-slippery-tiles --help >/dev/null 2>&1 && \
+if ! ([[ -x /root/novos-build/target/release/novos-custom-tools ]] && \
       /root/novos-build/target/release/novos-custom-tools --help >/dev/null 2>&1); then
     if ! command -v cargo >/dev/null 2>&1; then
         apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y cargo rustc
@@ -634,85 +633,10 @@ if ! ([[ -x /root/novos-build/target/release/novos-slippery-tiles && -x /root/no
         cargo build --release --manifest-path /root/novos-build/Cargo.toml
 fi
 
-install -m 0755 /root/novos-build/target/release/novos-slippery-tiles /usr/local/bin/novos-slippery-tiles
-ln -sfn /usr/local/bin/novos-slippery-tiles /usr/local/bin/novos-gtile-overlay
-
 install -m 0755 /root/novos-build/target/release/novos-custom-tools /usr/local/bin/novos-custom-tools
 cp -f /root/novos-build/custom-tools/manifest.yaml /etc/novos/custom-tools.yaml
 cp -f /root/novos-build/custom-tools/manifest.yaml /etc/novos/custom-tools/manifest.yaml
 cp -f /root/novos-build/custom-tools/manifest.yaml /usr/share/novos/custom-tools/manifest.yaml
-
-cat << 'EOF' > /usr/share/applications/novos-gtile-overlay.desktop
-[Desktop Entry]
-Name=NovOS gTile Grid Overlay
-Comment=Interactive 12x4 Ultrawide & 8x4 Standard Slippery Tile Grid Selector (Super+G)
-Exec=/usr/local/bin/novos-gtile-overlay overlay
-Icon=novos-logo
-Terminal=false
-Type=Application
-Categories=Utility;DesktopSettings;
-Keywords=tile;gtile;ultrawide;grid;window;cosmic;
-StartupNotify=false
-EOF
-
-cat << 'EOF' > /etc/systemd/user/novos-slippery-tiles.service
-[Unit]
-Description=NovOS Adaptive Slippery Tile & Ultrawide Grid Profile Service
-PartOf=graphical-session.target
-After=graphical-session.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/novos-slippery-tiles daemon
-
-[Install]
-WantedBy=default.target graphical-session.target
-EOF
-ln -sfn /etc/systemd/user/novos-slippery-tiles.service /etc/systemd/user/default.target.wants/novos-slippery-tiles.service
-
-provision_cosmic_shortcuts() {
-    local cfg_base="$1"
-    mkdir -p \
-        "${cfg_base}/com.system76.CosmicSettings.Shortcuts/v1" \
-        "${cfg_base}/com.system76.CosmicComp/v1"
-
-    # Prevent single-window auto-fullscreening; manage windows as scaled building blocks
-    printf 'false\n' > "${cfg_base}/com.system76.CosmicComp/v1/autotile"
-
-    cat << 'RON' > "${cfg_base}/com.system76.CosmicSettings.Shortcuts/v1/custom"
-{
-    // Super+Shift+Left/Right/Up/Down -> novos-slippery-tiles move left|right|up|down
-    (modifiers: [Super, Shift], key: "Left"): Spawn("novos-slippery-tiles move left"),
-    (modifiers: [Super, Shift], key: "Right"): Spawn("novos-slippery-tiles move right"),
-    (modifiers: [Super, Shift], key: "Up"): Spawn("novos-slippery-tiles move up"),
-    (modifiers: [Super, Shift], key: "Down"): Spawn("novos-slippery-tiles move down"),
-
-    // Super+Ctrl+Left/Right/Up/Down -> novos-slippery-tiles grow left|right|up|down
-    (modifiers: [Super, Ctrl], key: "Left"): Spawn("novos-slippery-tiles grow left"),
-    (modifiers: [Super, Ctrl], key: "Right"): Spawn("novos-slippery-tiles grow right"),
-    (modifiers: [Super, Ctrl], key: "Up"): Spawn("novos-slippery-tiles grow up"),
-    (modifiers: [Super, Ctrl], key: "Down"): Spawn("novos-slippery-tiles grow down"),
-
-    // Super+Ctrl+Alt+Left/Right/Up/Down -> novos-slippery-tiles shrink left|right|up|down
-    (modifiers: [Super, Ctrl, Alt], key: "Left"): Spawn("novos-slippery-tiles shrink left"),
-    (modifiers: [Super, Ctrl, Alt], key: "Right"): Spawn("novos-slippery-tiles shrink right"),
-    (modifiers: [Super, Ctrl, Alt], key: "Up"): Spawn("novos-slippery-tiles shrink up"),
-    (modifiers: [Super, Ctrl, Alt], key: "Down"): Spawn("novos-slippery-tiles shrink down"),
-
-    // Super+G -> novos-slippery-tiles overlay
-    (modifiers: [Super], key: "g"): Spawn("novos-slippery-tiles overlay"),
-
-    // Super+BracketLeft / Super+BracketRight -> novos-slippery-tiles pack left|right
-    (modifiers: [Super], key: "bracketleft"): Spawn("novos-slippery-tiles pack left"),
-    (modifiers: [Super], key: "bracketright"): Spawn("novos-slippery-tiles pack right"),
-}
-RON
-}
-
-provision_cosmic_shortcuts "/etc/skel/.config/cosmic"
-provision_cosmic_shortcuts "/home/${DEFAULT_USER}/.config/cosmic"
-provision_cosmic_shortcuts "/root/.config/cosmic"
 
 chown -R "${DEFAULT_USER}:${DEFAULT_USER}" "/home/${DEFAULT_USER}/.config"
 chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet
