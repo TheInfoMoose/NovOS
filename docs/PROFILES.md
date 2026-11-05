@@ -168,4 +168,4 @@ sudo novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool novos-cus
 
 ### 5.2 Standalone `slippery-tiles` Repository (`/srv/devshare/slippery-tiles`)
 > [!NOTE]
-> The `slippery-tiles` adaptive grid window tiling engine has been branched off into its own standalone project repository (`/srv/devshare/slippery-tiles`, exported via [`scripts/export-slippery-tiles.sh`](../scripts/export-slippery-tiles.sh)) and removed from the active NovOS distro tree. Once its standalone implementation is finalized, it can be re-integrated declaratively via [`custom-tools/manifest.yaml`](../custom-tools/manifest.yaml) (`github_release` or `github_source`).
+> The `slippery-tiles` adaptive grid window tiling engine has been branched off into its own standalone project repository (`/srv/devshare/slippery-tiles`) and removed from the active NovOS distro tree. Once its standalone implementation is finalized, it can be re-integrated declaratively via [`custom-tools/manifest.yaml`](../custom-tools/manifest.yaml) (`github_release` or `github_source`).

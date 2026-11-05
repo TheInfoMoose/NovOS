@@ -129,7 +129,13 @@ See [**Modular Profiles Reference (`docs/PROFILES.md`)**](docs/PROFILES.md) for 
 ```text
 NovOS/
 ├── AGENTS.md                          # Agent governance, sandbox locks & Argon execution protocol
+├── CLAUDE.md                          # Claude Code notes (defers to AGENTS.md)
 ├── README.md                          # Repository overview & quick-start guide
+├── STEPPED_IMPLEMENTATION_PLAN.md     # Atomic stepped implementation plan (Argon prompts)
+├── Cargo.toml / Cargo.lock            # Rust workspace root (novos-custom-tools)
+├── .agents/                           # Agent locks, permissions, MCP config, rules & skills
+├── .nebulous/                         # Golden OS snapshot, variance manifest & CI phase items
+├── .tracker/                          # Nebulous (`neb`) project/phase/domain tracking state
 ├── branding/                          # Deterministic Nova visual assets (SVG & RGBA PNG)
 │   ├── novos-logo.svg                 # Vector Supernova emblem (256x256)
 │   ├── novos-logo.png                 # Raster Supernova emblem (256x256 RGBA)
@@ -141,6 +147,11 @@ NovOS/
 │   └── modules/                       # Partition, 10-subvol mount/fstab, netinstall & limine-bootloader
 ├── config/
 │   └── build.env                      # Declarative build identity, storage & retention parameters
+├── crates/
+│   └── novos-custom-tools/            # Rust manifest-driven custom tool builder/installer
+├── custom-tools/
+│   └── manifest.yaml                  # Declarative custom tool sources (local / github_release / github_source)
+├── docker/                            # Containerized builder & QEMU tester images + CI compose file
 ├── docs/                              # Comprehensive OS documentation suite
 │   ├── ARCHITECTURE.md                # Kernel, Btrfs subvolumes, Limine, COSMIC & Calamares internals
 │   ├── BRANDING_AND_THEME.md          # Nova color palette, asset generator & theme provisioning
@@ -148,11 +159,14 @@ NovOS/
 │   └── PROFILES.md                    # Modular profiles (novos-setup & novos-llm-stack)
 └── scripts/
     ├── build-novos.sh                 # Primary Clean-Room 6-stage ISO build orchestrator
-    ├── build-live-iso.sh              # Stage 6 Live ISO packaging wrapper
     ├── test-qemu.sh                   # QEMU/KVM UEFI (OVMF) + VirtIO GPU verification harness
+    ├── test-docker-qemu.py            # Containerized QEMU install/E2E harness with local-LLM diagnostics
+    ├── setup-popos-test-env.sh        # Host setup for /srv/docker-vms & /srv/docker-llms test environment
+    ├── nebulous-ctl.py                # Golden snapshot extraction, variance lock & loop-breaker CLI
+    ├── mcp_nebulous_ci.py             # Stdio MCP server exposing Nebulous CI tools
     ├── generate-branding-assets.py    # Zero-dependency pure-Python SVG/PNG branding generator
     ├── lib/verify-deps.sh             # Host dependency & cross-stage post-condition gate library
-    └── stages/                        # Modular build stages (01 through 06)
+    └── stages/                        # Build stages 01-06 (06 finalizes and packages the Live ISO)
 ```
 
 ---
