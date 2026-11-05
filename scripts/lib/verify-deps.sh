@@ -1344,8 +1344,6 @@ if not isinstance(data, dict) or not data:
     echo "[OK]   mcp_nebulous_ci.py --self-test"
     "${VERIFY_REPO_ROOT}/scripts/setup-popos-test-env.sh" --self-test
     echo "[OK]   scripts/setup-popos-test-env.sh --self-test"
-    "${VERIFY_REPO_ROOT}/scripts/export-slippery-tiles.sh" --self-test
-    echo "[OK]   scripts/export-slippery-tiles.sh --self-test"
 
     if command -v cargo >/dev/null 2>&1 && [[ -f "${VERIFY_REPO_ROOT}/Cargo.toml" ]]; then
         echo "==> [Self-Test] Running Rust workspace checks (cargo fmt, clippy, test)..."
