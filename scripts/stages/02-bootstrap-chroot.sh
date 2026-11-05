@@ -17,15 +17,16 @@ elif [[ -n "${1:-}" ]]; then
     export MOUNT_ROOT="$1"
 fi
 
-if [[ ! -x "${MOUNT_ROOT}/bin/bash" ]]; then
-    echo "==> [Stage 2] Bootstrapping Debian (${DEBIAN_SUITE}) into ${MOUNT_ROOT}..."
-    debootstrap --arch=amd64 \
-        --components=main,contrib,non-free,non-free-firmware \
-        --include=systemd,systemd-sysv,libpam-systemd,dbus,dbus-user-session,locales,sudo,ca-certificates,curl,wget,gpg,apt-utils \
-        "$DEBIAN_SUITE" "$MOUNT_ROOT" "$DEBIAN_MIRROR"
-else
-    echo "==> [Stage 2] Existing debootstrap rootfs detected at ${MOUNT_ROOT}; skipping debootstrap download."
+# Stage 1 only creates empty mountpoint directories; any existing rootfs content means a reused tree.
+if [[ -e "${MOUNT_ROOT}/bin/bash" || -e "${MOUNT_ROOT}/usr/bin" || -e "${MOUNT_ROOT}/etc" ]]; then
+    echo "[FATAL] Staging dir ${MOUNT_ROOT} is not empty (existing rootfs found); fresh Stage 1-6 builds only" >&2
+    exit 1
 fi
+echo "==> [Stage 2] Bootstrapping Debian (${DEBIAN_SUITE}) into ${MOUNT_ROOT}..."
+debootstrap --arch=amd64 \
+    --components=main,contrib,non-free,non-free-firmware \
+    --include=systemd,systemd-sysv,libpam-systemd,dbus,dbus-user-session,locales,sudo,ca-certificates,curl,wget,gpg,apt-utils \
+    "$DEBIAN_SUITE" "$MOUNT_ROOT" "$DEBIAN_MIRROR"
 
 echo "==> [Stage 2] Writing Live/Calamares placeholder /etc/fstab for directory-staged build..."
 cat << 'EOF' > "${MOUNT_ROOT}/etc/fstab"
