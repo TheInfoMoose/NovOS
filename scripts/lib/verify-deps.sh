@@ -824,6 +824,7 @@ verify_stage5_post() {
         "/etc/calamares/modules/machineid.conf"
         "/etc/profile.d/novos-env.sh"
         "/etc/novos/custom-tools.yaml"
+        "/etc/novos/packages.yaml"
         "/usr/share/novos/apt-markers/novos-profile-wifi_1.0_all.deb"
         "/usr/share/novos/apt-markers/novos-profile-bluetooth_1.0_all.deb"
         "/usr/share/novos/apt-markers/Packages"
@@ -838,6 +839,19 @@ verify_stage5_post() {
             echo "[OK]   [Stage 5 Gate] Verified file: ${root}${cf}"
         fi
     done
+
+    # The local apt repo holds exactly the two profile meta packages; no fallback/marker debs.
+    local meta_index="${root}/usr/share/novos/apt-markers/Packages"
+    if [[ -f "$meta_index" ]]; then
+        local meta_pkgs
+        meta_pkgs="$(awk '/^Package:/ {print $2}' "$meta_index" | LC_ALL=C sort | tr '\n' ' ')"
+        if [[ "$meta_pkgs" != "novos-profile-bluetooth novos-profile-wifi " ]]; then
+            echo "[FAIL] [Stage 5 Gate] ${meta_index} must list exactly novos-profile-bluetooth and novos-profile-wifi; found: ${meta_pkgs:-<none>}" >&2
+            errors=$((errors + 1))
+        else
+            echo "[OK]   [Stage 5 Gate] Verified ${meta_index} lists exactly novos-profile-wifi and novos-profile-bluetooth"
+        fi
+    fi
 
     if [[ ! -f "${root}/usr/local/bin/novos-setup" ]] || ! grep -q -- '--pre-packages' "${root}/usr/local/bin/novos-setup"; then
         echo "[FAIL] [Stage 5 Gate] ${root}/usr/local/bin/novos-setup missing '--pre-packages' handler" >&2

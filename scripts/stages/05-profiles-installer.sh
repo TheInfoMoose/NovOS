@@ -27,9 +27,11 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.ghcup/bin:/usr/local/sbin:
 EOF
 chmod +x /etc/profile.d/novos-env.sh
 
-echo "==> [Stage 5.1b] Provisioning novos-custom-tools Binary & /etc/novos/custom-tools.yaml..."
+echo "==> [Stage 5.1b] Provisioning novos-custom-tools Binary, /etc/novos/custom-tools.yaml & /etc/novos/packages.yaml..."
+# A staged binary that predates the `packages` subcommands cannot serve novos-setup; rebuild it.
 if ! ([[ -x "${REPO_ROOT}/target/release/novos-custom-tools" ]] && \
-      "${REPO_ROOT}/target/release/novos-custom-tools" --help >/dev/null 2>&1); then
+      "${REPO_ROOT}/target/release/novos-custom-tools" --help >/dev/null 2>&1 && \
+      "${REPO_ROOT}/target/release/novos-custom-tools" packages validate "${REPO_ROOT}/config/packages.yaml" >/dev/null 2>&1); then
     if ! command -v cargo >/dev/null 2>&1; then
         apt-get update
         apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y cargo rustc
@@ -42,8 +44,11 @@ install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" /usr/local/bin/
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools.yaml
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /etc/novos/custom-tools/manifest.yaml
 cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /usr/share/novos/custom-tools/manifest.yaml
+# Unified package manifest: novos-setup profile installers read their package lists from here.
+install -m 0644 "${REPO_ROOT}/config/packages.yaml" /etc/novos/packages.yaml
+/usr/local/bin/novos-custom-tools packages validate /etc/novos/packages.yaml
 
-echo "==> [Stage 5.1c] Building Offline APT Marker Repository (/usr/share/novos/apt-markers) for Calamares WiFi/Bluetooth Opt-Out & Batch APT Guarantee..."
+echo "==> [Stage 5.1c] Building Offline APT Repository (/usr/share/novos/apt-markers) for the novos-profile-wifi / novos-profile-bluetooth Meta Packages..."
 MARKER_REPO="/usr/share/novos/apt-markers"
 MARKER_BUILD_TMP="$(mktemp -d)"
 rm -f /etc/apt/sources.list.d/novos-markers.list /var/lib/apt/lists/*apt-markers* 2>/dev/null || true
@@ -95,39 +100,6 @@ for spec in \
     "novos-profile-wifi:NovOS Calamares WiFi Profile Selection Marker" \
     "novos-profile-bluetooth:NovOS Calamares Bluetooth Profile Selection Marker"; do
     build_marker_deb "${spec%%:*}" "1.0" "${spec#*:}"
-done
-
-# Ensure every package referenced in calamares/modules/netinstall.yaml (including optional/custom-tools
-# packages like ghostty, lazygit, zig, pcsx2, btrfs-assistant, corectrl, goverlay) is resolvable as a
-# native amd64/all package in APT so Calamares' initial batch `apt-get -q -y install ...` never fails
-declare -A SEEN_MARKER_PKGS=(
-    ["novos-profile-wifi"]=1
-    ["novos-profile-bluetooth"]=1
-)
-NETINSTALL_CANDIDATE_PKGS=(ghostty lazygit zig pcsx2 btrfs-assistant corectrl goverlay)
-if [[ -f "${REPO_ROOT}/calamares/modules/netinstall.yaml" ]]; then
-    while IFS= read -r net_pkg; do
-        [[ -n "$net_pkg" ]] && NETINSTALL_CANDIDATE_PKGS+=("$net_pkg")
-    done < <(python3 -c '
-import sys, yaml
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    data = yaml.safe_load(fh) or []
-for grp in data:
-    for pkg in grp.get("packages", []) or []:
-        print(pkg)
-    for sub in grp.get("subgroups", []) or []:
-        for pkg in sub.get("packages", []) or []:
-            print(pkg)
-' "${REPO_ROOT}/calamares/modules/netinstall.yaml" 2>/dev/null || true)
-fi
-
-for cand_pkg in "${NETINSTALL_CANDIDATE_PKGS[@]}"; do
-    [[ -z "$cand_pkg" || -n "${SEEN_MARKER_PKGS[$cand_pkg]:-}" ]] && continue
-    SEEN_MARKER_PKGS["$cand_pkg"]=1
-    if ! apt-cache show "$cand_pkg" 2>/dev/null | grep -qE '^Architecture:[[:space:]]*(amd64|all)$'; then
-        echo "==> [Stage 5.1c] Package '${cand_pkg}' not found as amd64/all in upstream APT cache; creating fallback marker .deb in ${MARKER_REPO}..."
-        build_marker_deb "$cand_pkg" "0.0.1~novos1" "NovOS Calamares Netinstall Fallback Marker for ${cand_pkg}"
-    fi
 done
 
 gzip -9c "${MARKER_REPO}/Packages" > "${MARKER_REPO}/Packages.gz"
@@ -617,6 +589,30 @@ safe_apt_purge() {
     fi
 }
 
+# Package lists come from the unified manifest (config/packages.yaml -> /etc/novos/packages.yaml).
+# Usage: load_manifest_pkgs <profile> <source>...   (fills the global MANIFEST_PKGS array)
+# --with-arch keeps foreign-arch entries qualified (wine32:i386, libwine:i386).
+# A failed lookup or an empty source list is fatal: a profile never installs a silently shortened list.
+load_manifest_pkgs() {
+    local profile="$1"
+    shift
+    local src out
+    local batch=()
+    MANIFEST_PKGS=()
+    for src in "$@"; do
+        if ! out="$(novos-custom-tools packages list /etc/novos/packages.yaml --profile "$profile" --source "$src" --with-arch)"; then
+            echo "[ERROR] novos-custom-tools packages list /etc/novos/packages.yaml --profile ${profile} --source ${src} --with-arch failed." >&2
+            exit 1
+        fi
+        if [[ -z "$out" ]]; then
+            echo "[ERROR] /etc/novos/packages.yaml declares no '${src}' packages for profile '${profile}'." >&2
+            exit 1
+        fi
+        mapfile -t batch <<< "$out"
+        MANIFEST_PKGS+=("${batch[@]}")
+    done
+}
+
 is_pkg_installed() {
     local pkg="$1"
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"
@@ -767,13 +763,8 @@ configure_gaming_flathub() {
     fi
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-        flatpak install -y flathub \
-            com.valvesoftware.Steam \
-            com.heroicgameslauncher.hgl \
-            com.vysp3r.ProtonPlus \
-            com.github.Matoking.protontricks \
-            com.usebottles.bottles \
-            net.rpcs3.RPCS3 || true
+        load_manifest_pkgs gaming flatpak
+        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
 
         if [[ -d "/mnt/raid0" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.valvesoftware.Steam || true
@@ -1000,14 +991,8 @@ configure_comms_flathub() {
     fi
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-        flatpak install -y flathub \
-            com.brave.Browser \
-            io.gitlab.librewolf-community \
-            app.zen_browser.zen \
-            com.discordapp.Discord \
-            dev.vencord.Vesktop \
-            org.signal.Signal \
-            im.riot.Riot || true
+        load_manifest_pkgs comms flatpak
+        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
     fi
 }
 
@@ -1021,10 +1006,8 @@ configure_utilities_flathub() {
     fi
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-        flatpak install -y flathub \
-            io.missioncenter.MissionCenter \
-            org.localsend.localsend_app \
-            com.bitwarden.desktop || true
+        load_manifest_pkgs utilities flatpak
+        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
     fi
 }
 
@@ -1035,10 +1018,8 @@ install_wifi_profile() {
     echo "==> [Profile: WiFi] Enabling & installing Wireless Connectivity Stack + Firmware..."
     rm -f /etc/novos/no-wifi /etc/novos/wifi-disabled
     systemctl unmask wpa_supplicant.service iwd.service 2>/dev/null || true
-    safe_apt_install \
-        novos-profile-wifi \
-        iwd wpasupplicant wireless-regdb iw rfkill \
-        firmware-iwlwifi firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211
+    load_manifest_pkgs wifi novos-meta apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
     verify_profile_deps wifi
 }
@@ -1060,9 +1041,8 @@ install_bluetooth_profile() {
     echo "==> [Profile: Bluetooth] Enabling & installing Bluetooth Audio & Peripherals Stack..."
     rm -f /etc/novos/no-bluetooth /etc/novos/bluetooth-disabled
     systemctl unmask bluetooth.service 2>/dev/null || true
-    safe_apt_install \
-        novos-profile-bluetooth \
-        bluez bluez-obexd blueman libspa-0.2-bluetooth
+    load_manifest_pkgs bluetooth novos-meta apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     command -v rfkill >/dev/null 2>&1 && rfkill unblock bluetooth 2>/dev/null || true
     if [[ "$POST_CALAMARES" == "true" ]] || systemd-detect-virt --chroot >/dev/null 2>&1; then
         systemctl enable bluetooth.service 2>/dev/null || true
@@ -1086,62 +1066,48 @@ install_no_bluetooth_profile() {
 
 install_gaming_profile() {
     echo "==> [Profile: Gaming] Installing Gaming & Emulation Suite (APT + Flathub)..."
-    safe_apt_install \
-        gamemode gamescope mangohud goverlay vulkan-tools \
-        lutris wine wine64 wine32:i386 libwine:i386 winetricks \
-        retroarch dolphin-emu pcsx2 openrgb corectrl flatpak
+    load_manifest_pkgs gaming apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_gaming_flathub
     verify_profile_deps gaming
 }
 
 install_dev_profile() {
     echo "==> [Profile: Dev] Installing Antigravity, Editors, Docker/Podman/Distrobox, KVM & Polyglot Toolchains..."
-    safe_apt_install \
-        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        podman buildah skopeo distrobox \
-        qemu-system-x86 libvirt-daemon-system virt-manager \
-        code neovim hx antigravity \
-        python3 python3-pip python3-venv python3-dev python3-full \
-        pkg-config libssl-dev libudev-dev clang lld llvm cmake ninja-build \
-        ghc cabal-install haskell-stack nodejs npm golang-go zig \
-        gh lazygit alacritty ghostty \
-        alien rpm2cpio cpio patchelf desktop-file-utils squashfs-tools zsync strace fakeroot
+    load_manifest_pkgs dev apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_dev_runtime
     verify_profile_deps dev
 }
 
 install_devsecops_profile() {
     echo "==> [Profile: DevSecOps] Installing Pentesting Suite, Firewalls & Kali Rolling Box (novos-sec-box)..."
-    safe_apt_install \
-        nmap wireshark tshark tcpdump netcat-openbsd \
-        john hashcat aircrack-ng hydra \
-        sqlmap gobuster radare2 gdb \
-        ufw firewalld distrobox podman
+    load_manifest_pkgs devsecops apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_devsecops_runtime
     verify_profile_deps devsecops
 }
 
 install_llm_profile() {
     echo "==> [Profile: Local AI / LLM] Installing Ollama, llama.cpp, Hugging Face CLI, GPU Monitors & ComfyUI Stack..."
-    safe_apt_install \
-        nvtop radeontop btop rocm-smi libcurl4-openssl-dev libvulkan-dev glslang-tools spirv-tools glslc
+    load_manifest_pkgs llm apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_llm_runtime
     verify_profile_deps llm
 }
 
 install_network_profile() {
     echo "==> [Profile: Network / Remote] Installing Samba (DevShare), Remmina, WireGuard, Tailscale, Syncthing & SSH..."
-    safe_apt_install \
-        remmina remmina-plugin-rdp remmina-plugin-vnc \
-        samba smbclient cifs-utils wireguard-tools openssh-server tailscale syncthing rclone
+    load_manifest_pkgs network apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_network_runtime
     verify_profile_deps network
 }
 
 install_comms_profile() {
     echo "==> [Profile: Browsers, Email & Comms] Installing Firefox ESR, Chromium, Thunderbird & Flathub Comms..."
-    safe_apt_install \
-        firefox-esr chromium thunderbird flatpak
+    load_manifest_pkgs comms apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_comms_flathub
     verify_profile_deps comms
 }
@@ -1152,19 +1118,15 @@ install_browsers_profile() {
 
 install_media_profile() {
     echo "==> [Profile: Media, Pro Audio & Creative] Installing Media Players, DAW, 2D/3D & CAD Suite..."
-    safe_apt_install \
-        vlc mpv handbrake obs-studio kdenlive \
-        gimp inkscape krita darktable \
-        blender freecad \
-        audacity ardour pipewire-jack
+    load_manifest_pkgs media apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     verify_profile_deps media
 }
 
 install_utilities_profile() {
     echo "==> [Profile: System Admin, Btrfs & Office] Installing LibreOffice, Btrfs Tools & Workstation Utilities..."
-    safe_apt_install \
-        libreoffice fastfetch gparted keepassxc tmux ripgrep fd-find \
-        timeshift btrfs-assistant flatpak
+    load_manifest_pkgs utilities apt
+    safe_apt_install "${MANIFEST_PKGS[@]}"
     configure_utilities_flathub
     verify_profile_deps utilities
 }
