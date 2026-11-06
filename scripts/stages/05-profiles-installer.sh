@@ -991,10 +991,6 @@ configure_network_runtime() {
         done
     fi
 
-    if [[ "$POST_CALAMARES" != "true" ]] && ! command -v tailscale >/dev/null 2>&1; then
-        curl --connect-timeout 15 --max-time 300 --retry 2 -fsSL https://tailscale.com/install.sh | sh || true
-    fi
-
     mkdir -p /srv/devshare /etc/samba
     if id "$TARGET_USER" >/dev/null 2>&1; then
         chown -R "${TARGET_USER}:${TARGET_USER}" /srv/devshare

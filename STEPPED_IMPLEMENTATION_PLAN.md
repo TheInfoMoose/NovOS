@@ -122,7 +122,7 @@
 | **STEP 9D** | **COMPLETED** | `/boost` | Remove fallback marker debs; profiles read manifest | `scripts/stages/05-profiles-installer.sh`, `scripts/lib/verify-deps.sh` |
 | **STEP 9E** | **COMPLETED** | `/goal` | Build-time availability gate (fail on unresolvable package) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9F** | PLANNED | `/goal` | Install-time failure report (continue + surface) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh`, `calamares/modules/shellprocess-novos.conf` |
-| **STEP 9G** | PLANNED | `/goal` | Tailscale from its official signed apt repo; drop `curl \| sh` | `scripts/stages/03-core-system.sh`, `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9G** | **COMPLETED** | `/goal` | Tailscale from its official signed apt repo; drop `curl \| sh` | `scripts/stages/03-core-system.sh`, `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9H** | PLANNED | `/boost` | `tarball` custom-tool type (pinned sha256) + zig entry | `crates/novos-custom-tools/src/main.rs`, `custom-tools/manifest.yaml` |
 | **STEP 9I** | PLANNED | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
 | **STEP 9J** | PLANNED | `/goal` | Dev profile installs `custom-tool` entries (zig) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh` |

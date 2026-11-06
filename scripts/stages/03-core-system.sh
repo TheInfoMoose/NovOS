@@ -94,7 +94,7 @@ if [ -x /usr/bin/dbus-daemon ] && [ ! -e /run/dbus/system_bus_socket ]; then
     /usr/bin/dbus-daemon --system --fork || true
 fi
 
-# Pre-configure Third-Party Repositories (XanMod, Debian COSMIC, Docker, VS Code, Antigravity)
+# Pre-configure Third-Party Repositories (XanMod, Debian COSMIC, Docker, VS Code, Tailscale, Antigravity)
 mkdir -p /etc/apt/keyrings
 
 # 1. XanMod Repository
@@ -113,7 +113,12 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.d
 curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --yes -o /etc/apt/keyrings/packages.microsoft.gpg
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
 
-# 5. Google Antigravity Repository (Pre-configured for Antigravity IDE, App & agy CLI)
+# 5. Tailscale Repository (Pre-configured for Network profile; .noarmor key is already binary)
+curl -fsSL https://pkgs.tailscale.com/stable/debian/sid.noarmor.gpg -o /etc/apt/keyrings/tailscale-archive-keyring.gpg
+chmod 0644 /etc/apt/keyrings/tailscale-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian ${DEBIAN_SUITE} main" > /etc/apt/sources.list.d/tailscale.list
+
+# 6. Google Antigravity Repository (Pre-configured for Antigravity IDE, App & agy CLI)
 if curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg 2>/dev/null; then
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main" > /etc/apt/sources.list.d/antigravity.list
 fi
