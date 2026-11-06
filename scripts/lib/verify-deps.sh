@@ -1103,6 +1103,59 @@ with open(sys.argv[1], "rb") as f:
 # ------------------------------------------------------------------------------
 # 3. Self-Test Runner (--self-test)
 # ------------------------------------------------------------------------------
+
+# calamares/modules/netinstall.yaml is generated from config/packages.yaml.
+# Fail when the committed file differs from a fresh render (ignoring the
+# '# GENERATED' header line) or when no renderer is available.
+check_netinstall_drift() {
+    local netinstall="${VERIFY_REPO_ROOT}/calamares/modules/netinstall.yaml"
+    local manifest="${VERIFY_REPO_ROOT}/config/packages.yaml"
+    local render_cmd=()
+    if command -v cargo >/dev/null 2>&1 && [[ -f "${VERIFY_REPO_ROOT}/Cargo.toml" ]]; then
+        render_cmd=(cargo run -q --manifest-path "${VERIFY_REPO_ROOT}/Cargo.toml" -p novos-custom-tools --)
+    elif [[ -x "${VERIFY_REPO_ROOT}/target/release/novos-custom-tools" ]]; then
+        render_cmd=("${VERIFY_REPO_ROOT}/target/release/novos-custom-tools")
+    else
+        echo "[FAIL] [Self-Test] netinstall drift gate: neither cargo nor target/release/novos-custom-tools is available to render ${manifest#"${VERIFY_REPO_ROOT}/"}" >&2
+        return 1
+    fi
+
+    if ! grep -q '^# GENERATED' "$netinstall"; then
+        echo "[FAIL] [Self-Test] ${netinstall#"${VERIFY_REPO_ROOT}/"} is missing its '# GENERATED' header (it must be rendered from config/packages.yaml)" >&2
+        return 1
+    fi
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/novos-netinstall-drift.XXXXXX")"
+    if ! "${render_cmd[@]}" packages render-netinstall "$manifest" > "${tmp_dir}/rendered.yaml"; then
+        echo "[FAIL] [Self-Test] novos-custom-tools packages render-netinstall failed for ${manifest#"${VERIFY_REPO_ROOT}/"}" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! grep -v '^# GENERATED' "$netinstall" > "${tmp_dir}/committed.yaml"; then
+        echo "[FAIL] [Self-Test] ${netinstall#"${VERIFY_REPO_ROOT}/"} has no content besides its '# GENERATED' header" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    local drift_rc
+    if diff -u --label "committed: calamares/modules/netinstall.yaml" --label "rendered: config/packages.yaml" \
+        "${tmp_dir}/committed.yaml" "${tmp_dir}/rendered.yaml" > "${tmp_dir}/drift.diff"; then
+        drift_rc=0
+    else
+        drift_rc=$?
+    fi
+    if [[ "$drift_rc" -ne 0 ]]; then
+        echo "[FAIL] [Self-Test] calamares/modules/netinstall.yaml drifted from config/packages.yaml (diff exit ${drift_rc}). Re-render it; never hand-edit:" >&2
+        cat "${tmp_dir}/drift.diff" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    rm -rf "$tmp_dir"
+    echo "[OK]   netinstall.yaml matches novos-custom-tools packages render-netinstall config/packages.yaml"
+    return 0
+}
+
 run_self_test() {
     echo "==> [Self-Test] Validating Bash syntax (bash -n) across scripts/..."
     local sh_files=()
@@ -1274,6 +1327,11 @@ for required_tok in (
     if [[ -x "${VERIFY_REPO_ROOT}/target/release/novos-custom-tools" && -f "${VERIFY_REPO_ROOT}/custom-tools/manifest.yaml" ]]; then
         "${VERIFY_REPO_ROOT}/target/release/novos-custom-tools" --validate "${VERIFY_REPO_ROOT}/custom-tools/manifest.yaml" >/dev/null
         echo "[OK]   novos-custom-tools --validate: custom-tools/manifest.yaml"
+    fi
+
+    echo "==> [Self-Test] Checking calamares/modules/netinstall.yaml for drift against config/packages.yaml..."
+    if ! check_netinstall_drift; then
+        return 1
     fi
 
     echo "==> [Self-Test] Validating Host-Safety Invariants across scripts/..."

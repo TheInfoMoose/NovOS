@@ -115,7 +115,7 @@
 | **STEP 8F** | **COMPLETED** | `/boost` | Rewrite `CLAUDE.md`, reduce `AGENTS.md` to pointer, retire `.agents/` with parity table | `CLAUDE.md`, `AGENTS.md`, `.agents/*` (DEL) |
 | **STEP 9A** | **COMPLETED** | `/goal` | Author unified package manifest (lossless migration) | `config/packages.yaml` |
 | **STEP 9B** | **COMPLETED** | `/boost` | `novos-custom-tools packages` subcommands + tests | `crates/novos-custom-tools/src/main.rs`, `crates/novos-custom-tools/src/packages.rs` |
-| **STEP 9C** | PLANNED | `/goal` | Render `netinstall.yaml` from manifest + drift gate | `calamares/modules/netinstall.yaml`, `scripts/lib/verify-deps.sh` |
+| **STEP 9C** | **COMPLETED** | `/goal` | Render `netinstall.yaml` from manifest + drift gate | `calamares/modules/netinstall.yaml`, `scripts/lib/verify-deps.sh` |
 | **STEP 9D** | PLANNED | `/boost` | Remove fallback marker debs; profiles read manifest | `scripts/stages/05-profiles-installer.sh`, `scripts/lib/verify-deps.sh` |
 | **STEP 9E** | PLANNED | `/goal` | Build-time availability gate (fail on unresolvable package) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9F** | PLANNED | `/goal` | Install-time failure report (continue + surface) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh`, `calamares/modules/shellprocess-novos.conf` |
