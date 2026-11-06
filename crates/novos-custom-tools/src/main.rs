@@ -5,6 +5,11 @@
 //!   - `github_release`: Prebuilt GitHub Release assets (.deb, .AppImage, .tar.gz, binary)
 //!   - `github_source`: Source repositories built via `cargo build --release`,
 //!     `uv tool install`, or `make`.
+//!
+//! `novos-custom-tools packages <validate|list|render-netinstall|check-apt>`
+//! operates on the unified package manifest `config/packages.yaml` (see `packages.rs`).
+
+mod packages;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -203,7 +208,7 @@ fn escape_json(s: &str) -> String {
     out
 }
 
-fn strip_yaml_comment(line: &str) -> &str {
+pub(crate) fn strip_yaml_comment(line: &str) -> &str {
     let mut in_single = false;
     let mut in_double = false;
     let mut escape = false;
@@ -1535,12 +1540,238 @@ pub fn run_self_tests() -> i32 {
 fn print_help() {
     println!(
         "usage: novos-custom-tools [--validate [MANIFEST]] [--self-test] [--manifest MANIFEST] [--list] [--install-enabled] [--tool TOOL] [--dry-run]\n\n\
-         NovOS Declarative Custom Tools & GitHub Component Builder"
+         NovOS Declarative Custom Tools & GitHub Component Builder\n\n\
+         {PACKAGES_USAGE}"
     );
+}
+
+const PACKAGES_USAGE: &str = "\
+usage: novos-custom-tools packages <command> <file> [options]
+
+commands:
+  validate <file>
+      Validate the unified package manifest (config/packages.yaml).
+  list <file> [--layer base|desktop|profile] [--profile P] [--source apt|flatpak|novos-meta]
+              [--with-arch] [--health app-health.toml]
+      Print one package per line (de-duplicated, manifest order). --with-arch prints
+      i386 entries as name:i386. --health substitutes the declared alternative for
+      packages listed in [[broken]] tables.
+  render-netinstall <file>
+      Print a deterministic Calamares netinstall.yaml (profile layer; apt + novos-meta).
+  check-apt <file> [--layer base|desktop|profile | --all]
+      Run apt-cache policy for every apt package and print each unresolvable one.
+
+exit codes: 0 ok, 1 invalid manifest or runtime error, 2 usage error, 3 unresolvable apt packages";
+
+fn packages_usage_error(msg: &str) -> i32 {
+    eprintln!("[FAIL] {msg}\n\n{PACKAGES_USAGE}");
+    2
+}
+
+fn load_valid_packages(path: &Path) -> Result<packages::PackageManifest, i32> {
+    let report = |errors: Vec<String>| {
+        for err in errors {
+            eprintln!("[FAIL] {err}");
+        }
+        1
+    };
+    let manifest = packages::load_packages(path).map_err(report)?;
+    let errors = manifest.validate();
+    if !errors.is_empty() {
+        return Err(report(errors));
+    }
+    Ok(manifest)
+}
+
+fn parse_layer_arg(value: &str) -> Result<packages::Layer, i32> {
+    packages::Layer::parse(value).ok_or_else(|| {
+        packages_usage_error(&format!(
+            "invalid --layer {value:?}; expected base|desktop|profile"
+        ))
+    })
+}
+
+/// `novos-custom-tools packages ...`; returns the process exit code.
+fn run_packages_cli(args: &[String]) -> i32 {
+    let Some(command) = args.first() else {
+        return packages_usage_error("missing packages command");
+    };
+    if matches!(command.as_str(), "-h" | "--help") {
+        println!("{PACKAGES_USAGE}");
+        return 0;
+    }
+    if !matches!(
+        command.as_str(),
+        "validate" | "list" | "render-netinstall" | "check-apt"
+    ) {
+        return packages_usage_error(&format!("unknown packages command {command:?}"));
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut filter = packages::ListFilter::default();
+    let mut health: Option<PathBuf> = None;
+    let mut all_layers = false;
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let takes_value = matches!(arg, "--layer" | "--profile" | "--source" | "--health");
+        let value = if takes_value {
+            i += 1;
+            match args.get(i) {
+                Some(v) => Some(v.as_str()),
+                None => return packages_usage_error(&format!("{arg} requires a value")),
+            }
+        } else {
+            None
+        };
+        let allowed = match command.as_str() {
+            "list" => matches!(
+                arg,
+                "--layer" | "--profile" | "--source" | "--with-arch" | "--health"
+            ),
+            "check-apt" => matches!(arg, "--layer" | "--all"),
+            _ => false,
+        };
+        match (arg, value) {
+            (a, _) if a.starts_with('-') && !allowed => {
+                return packages_usage_error(&format!("unrecognized option {a} for {command}"));
+            }
+            ("--layer", Some(v)) => match parse_layer_arg(v) {
+                Ok(l) => filter.layer = Some(l),
+                Err(code) => return code,
+            },
+            ("--profile", Some(v)) => {
+                if !packages::KNOWN_PROFILES.contains(&v) {
+                    return packages_usage_error(&format!(
+                        "unknown --profile {v:?}; expected one of {:?}",
+                        packages::KNOWN_PROFILES
+                    ));
+                }
+                filter.profile = Some(v.to_string());
+            }
+            ("--source", Some(v)) => match packages::Source::parse(v) {
+                Some(s) => filter.source = Some(s),
+                None => {
+                    return packages_usage_error(&format!(
+                        "invalid --source {v:?}; expected apt|flatpak|novos-meta"
+                    ))
+                }
+            },
+            ("--health", Some(v)) => health = Some(PathBuf::from(v)),
+            ("--with-arch", None) => filter.with_arch = true,
+            ("--all", None) => all_layers = true,
+            (positional, None) if file.is_none() => file = Some(PathBuf::from(positional)),
+            (extra, _) => {
+                return packages_usage_error(&format!("unexpected argument {extra:?}"));
+            }
+        }
+        i += 1;
+    }
+
+    let Some(file) = file else {
+        return packages_usage_error(&format!("{command} requires a manifest file"));
+    };
+    if all_layers && filter.layer.is_some() {
+        return packages_usage_error("--layer and --all are mutually exclusive");
+    }
+    let manifest = match load_valid_packages(&file) {
+        Ok(m) => m,
+        Err(code) => return code,
+    };
+
+    match command.as_str() {
+        "validate" => {
+            let s = manifest.summary();
+            println!(
+                "{{\"status\": \"valid\", \"manifest\": \"{}\", \"groups\": {}, \"subgroups\": {}, \"entries\": {}, \"unique_packages\": {}, \"required\": {}, \"smoke_checks\": {}}}",
+                escape_json(&file.to_string_lossy()),
+                s.groups,
+                s.subgroups,
+                s.entries,
+                s.unique_packages,
+                s.required,
+                s.smoke_checks
+            );
+            0
+        }
+        "list" => {
+            let broken = match health {
+                Some(ref path) => {
+                    let parsed = fs::read_to_string(path)
+                        .map_err(|e| format!("could not read {}: {e}", path.display()))
+                        .and_then(|text| packages::parse_health_toml(&text));
+                    match parsed {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("[FAIL] {e}");
+                            return 1;
+                        }
+                    }
+                }
+                None => HashSet::new(),
+            };
+            match manifest.list(&filter, &broken) {
+                Ok(names) => {
+                    for n in names {
+                        println!("{n}");
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("[FAIL] {e}");
+                    1
+                }
+            }
+        }
+        "render-netinstall" => {
+            print!("{}", manifest.render_netinstall());
+            0
+        }
+        _ => {
+            let apt_filter = packages::ListFilter {
+                layer: filter.layer,
+                source: Some(packages::Source::Apt),
+                with_arch: true,
+                ..Default::default()
+            };
+            let specs = match manifest.list(&apt_filter, &HashSet::new()) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[FAIL] {e}");
+                    return 1;
+                }
+            };
+            match packages::check_apt(&specs, packages::apt_cache_policy) {
+                Ok(missing) if missing.is_empty() => {
+                    eprintln!("[OK] all {} apt packages resolvable", specs.len());
+                    0
+                }
+                Ok(missing) => {
+                    for m in &missing {
+                        println!("{m}");
+                    }
+                    eprintln!(
+                        "[FAIL] {} of {} apt packages unresolvable",
+                        missing.len(),
+                        specs.len()
+                    );
+                    3
+                }
+                Err(e) => {
+                    eprintln!("[FAIL] {e}");
+                    1
+                }
+            }
+        }
+    }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if args.get(1).map(String::as_str) == Some("packages") {
+        std::process::exit(run_packages_cli(&args[2..]));
+    }
 
     let mut self_test = false;
     let mut validate_flag = false;
