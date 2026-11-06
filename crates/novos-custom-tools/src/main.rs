@@ -5,6 +5,8 @@
 //!   - `github_release`: Prebuilt GitHub Release assets (.deb, .AppImage, .tar.gz, binary)
 //!   - `github_source`: Source repositories built via `cargo build --release`,
 //!     `uv tool install`, or `make`.
+//!   - `tarball`: A pinned upstream tarball (https `url` + `sha256`), verified before it is
+//!     extracted into `install_dir`, with `install_target` symlinked to `binary`.
 //!
 //! `novos-custom-tools packages <validate|list|render-netinstall|check-apt>`
 //! operates on the unified package manifest `config/packages.yaml` (see `packages.rs`).
@@ -18,7 +20,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const VALID_TOOL_TYPES: [&str; 3] = ["local", "github_release", "github_source"];
+pub const VALID_TOOL_TYPES: [&str; 4] = ["local", "github_release", "github_source", "tarball"];
 pub const VALID_ASSET_FORMATS: [&str; 7] = [
     "deb",
     ".deb",
@@ -122,6 +124,8 @@ pub struct ExecutionPlan {
     pub branch: Option<String>,
     pub build_system: Option<String>,
     pub build_command: Option<String>,
+    pub url: Option<String>,
+    pub sha256: Option<String>,
     pub steps: Vec<String>,
     pub status: Option<String>,
 }
@@ -172,6 +176,12 @@ impl ExecutionPlan {
                 "{inner}\"build_command\": \"{}\"",
                 escape_json(bcmd)
             ));
+        }
+        if let Some(ref url) = self.url {
+            fields.push(format!("{inner}\"url\": \"{}\"", escape_json(url)));
+        }
+        if let Some(ref sha) = self.sha256 {
+            fields.push(format!("{inner}\"sha256\": \"{}\"", escape_json(sha)));
         }
         fields.push(format!(
             "{inner}\"install_target\": \"{}\"",
@@ -525,10 +535,59 @@ pub fn validate_manifest_data(data: &ManifestData) -> (bool, Vec<String>) {
                     "Tool {name:?} (github_source): 'build_system' must be one of {VALID_BUILD_SYSTEMS:?}"
                 ));
             }
+        } else if ttype == "tarball" {
+            errors.extend(validate_tarball_entry(&name, entry));
         }
     }
 
     (errors.is_empty(), errors)
+}
+
+/// True for exactly 64 lowercase hex characters (a sha256 digest as `sha256sum` prints it).
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// True for a non-empty relative path with no `..`, `.` or empty components.
+fn is_clean_relative_path(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('/')
+        && s.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
+fn validate_tarball_entry(name: &str, entry: &ToolEntry) -> Vec<String> {
+    let mut errors = Vec::new();
+    let field = |k: &str| entry.get(k).and_then(|v| v.as_str());
+
+    match field("version") {
+        Some(v) if !v.trim().is_empty() => {}
+        _ => errors.push(format!("Tool {name:?} (tarball): 'version' is required")),
+    }
+    match field("url") {
+        Some(u) if u.starts_with("https://") && u.len() > "https://".len() => {}
+        other => errors.push(format!(
+            "Tool {name:?} (tarball): 'url' must be an https:// URL, got {other:?}"
+        )),
+    }
+    match field("sha256") {
+        Some(h) if is_sha256_hex(h) => {}
+        other => errors.push(format!(
+            "Tool {name:?} (tarball): 'sha256' must be exactly 64 lowercase hex characters, got {other:?}"
+        )),
+    }
+    match field("install_dir") {
+        Some(d) if d.starts_with('/') && d != "/" && is_clean_relative_path(&d[1..]) => {}
+        other => errors.push(format!(
+            "Tool {name:?} (tarball): 'install_dir' must be an absolute path below /, got {other:?}"
+        )),
+    }
+    match field("binary") {
+        Some(b) if is_clean_relative_path(b) => {}
+        other => errors.push(format!(
+            "Tool {name:?} (tarball): 'binary' must be a relative path inside the extracted tree, got {other:?}"
+        )),
+    }
+    errors
 }
 
 pub fn build_execution_plan(entry: &ToolEntry, repo_root: &Path) -> Result<ExecutionPlan, String> {
@@ -586,6 +645,8 @@ pub fn build_execution_plan(entry: &ToolEntry, repo_root: &Path) -> Result<Execu
             branch: None,
             build_system: None,
             build_command: None,
+            url: None,
+            sha256: None,
             steps,
             status: None,
         });
@@ -647,6 +708,8 @@ pub fn build_execution_plan(entry: &ToolEntry, repo_root: &Path) -> Result<Execu
             branch: None,
             build_system: None,
             build_command: None,
+            url: None,
+            sha256: None,
             steps: vec![format!("fetch {api_url}"), install_cmd],
             status: None,
         });
@@ -698,6 +761,46 @@ pub fn build_execution_plan(entry: &ToolEntry, repo_root: &Path) -> Result<Execu
             branch: Some(branch),
             build_system: Some(build_system),
             build_command: Some(build_cmd),
+            url: None,
+            sha256: None,
+            steps,
+            status: None,
+        });
+    }
+
+    if ttype == "tarball" {
+        let field = |k: &str| {
+            entry
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("Missing {k}"))
+        };
+        let url = field("url")?;
+        let sha256 = field("sha256")?;
+        let install_dir = field("install_dir")?;
+        let binary = field("binary")?;
+        let steps = vec![
+            format!("curl -fsSL -o <download> {url}"),
+            format!("sha256sum <download> == {sha256} (abort before extracting on mismatch)"),
+            format!("tar -xf <download> --strip-components=1 -C {install_dir}"),
+            format!("ln -s {install_dir}/{binary} {install_target} (replace symlink only)"),
+        ];
+        return Ok(ExecutionPlan {
+            name,
+            tool_type: ttype,
+            install_target,
+            source_exists: None,
+            source_path: None,
+            api_url: None,
+            asset_format: None,
+            asset_pattern: None,
+            repo: None,
+            branch: None,
+            build_system: None,
+            build_command: None,
+            url: Some(url),
+            sha256: Some(sha256),
             steps,
             status: None,
         });
@@ -801,6 +904,105 @@ fn install_binary_mode_755(src: &Path, dst: &Path) -> Result<(), String> {
     perms.set_mode(0o755);
     fs::set_permissions(dst, perms).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Run `sha256sum` on `path` and fail unless the digest equals `expected`.
+pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let out = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("Failed invoking sha256sum: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("sha256sum failed for {}", path.display()));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let actual = stdout.split_whitespace().next().unwrap_or("");
+    if actual != expected {
+        return Err(format!(
+            "sha256 mismatch for {}: expected {expected}, got {actual}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Point `link` at `dest`. An existing symlink is replaced; any other existing
+/// file type (regular file, directory) is left alone and reported as an error.
+pub fn replace_symlink(dest: &Path, link: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            fs::remove_file(link)
+                .map_err(|e| format!("Failed removing old symlink {}: {e}", link.display()))?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "Refusing to overwrite {}: it exists and is not a symlink",
+                link.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed inspecting {}: {e}", link.display())),
+    }
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    symlink(dest, link).map_err(|e| {
+        format!(
+            "Failed linking {} -> {}: {e}",
+            link.display(),
+            dest.display()
+        )
+    })
+}
+
+fn install_tarball(entry: &ToolEntry, plan: &ExecutionPlan) -> Result<(), String> {
+    let url = plan.url.as_deref().ok_or("Missing url")?;
+    let sha256 = plan.sha256.as_deref().ok_or("Missing sha256")?;
+    let install_dir = entry
+        .get("install_dir")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing install_dir")?;
+    let binary = entry
+        .get("binary")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing binary")?;
+
+    let tmpd = make_temp_dir("novos-tarball-")?;
+    let archive = tmpd.join("archive");
+    let fetched = (|| {
+        let st = Command::new("curl")
+            .args(["-fsSL", "-o", &archive.to_string_lossy(), url])
+            .status()
+            .map_err(|e| format!("Failed invoking curl for {url}: {e}"))?;
+        if !st.success() {
+            return Err(format!("Failed downloading {url}"));
+        }
+        verify_sha256(&archive, sha256)?;
+        fs::create_dir_all(install_dir)
+            .map_err(|e| format!("Failed creating {install_dir}: {e}"))?;
+        let st = Command::new("tar")
+            .args([
+                "-xf",
+                &archive.to_string_lossy(),
+                "--strip-components=1",
+                "-C",
+                install_dir,
+            ])
+            .status()
+            .map_err(|e| format!("Failed invoking tar: {e}"))?;
+        if !st.success() {
+            return Err(format!("tar extraction of {url} into {install_dir} failed"));
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&tmpd);
+    fetched?;
+
+    let bin_path = Path::new(install_dir).join(binary);
+    if !bin_path.is_file() {
+        return Err(format!("Extracted tree has no file {}", bin_path.display()));
+    }
+    replace_symlink(&bin_path, Path::new(&plan.install_target))
 }
 
 pub fn execute_tool_install(
@@ -1037,6 +1239,12 @@ pub fn execute_tool_install(
             }
         }
         let _ = fs::remove_dir_all(&tmpd);
+        plan.status = Some("installed".to_string());
+        return Ok(plan);
+    }
+
+    if ttype == "tarball" {
+        install_tarball(entry, &plan)?;
         plan.status = Some("installed".to_string());
         return Ok(plan);
     }
@@ -1346,9 +1554,9 @@ pub fn test_fallback_yaml_parser_parity() -> Result<(), String> {
     if !ok {
         return Err(format!("Fallback parser failed validation: {errors:?}"));
     }
-    if fallback_data.tools.len() != 4 {
+    if fallback_data.tools.len() != 5 {
         return Err(format!(
-            "Expected 4 tools, got {}",
+            "Expected 5 tools, got {}",
             fallback_data.tools.len()
         ));
     }
@@ -1495,10 +1703,132 @@ pub fn test_invalid_manifest_rejected() -> Result<(), String> {
     Ok(())
 }
 
+fn str_entry(pairs: &[(&str, &str)]) -> ToolEntry {
+    let mut entry: ToolEntry = pairs
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                ToolFieldValue::Scalar(YamlScalar::Str(v.to_string())),
+            )
+        })
+        .collect();
+    entry.insert(
+        "enabled".to_string(),
+        ToolFieldValue::Scalar(YamlScalar::Bool(false)),
+    );
+    entry
+}
+
+pub fn test_tarball_validation_and_plan() -> Result<(), String> {
+    const SHA: &str = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a";
+    let good: [(&str, &str); 8] = [
+        ("name", "tb"),
+        ("type", "tarball"),
+        ("version", "0.17.1"),
+        (
+            "url",
+            "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz",
+        ),
+        ("sha256", SHA),
+        ("install_dir", "/opt/zig"),
+        ("binary", "zig"),
+        ("install_target", "/usr/local/bin/zig"),
+    ];
+    let manifest_with = |entry: ToolEntry| ManifestData {
+        scalars: HashMap::from([("schema_version".to_string(), YamlScalar::Int(1))]),
+        tools: vec![entry],
+    };
+    let with_override = |key: &str, val: Option<&str>| {
+        let mut entry = str_entry(&good);
+        match val {
+            Some(v) => entry.insert(
+                key.to_string(),
+                ToolFieldValue::Scalar(YamlScalar::Str(v.to_string())),
+            ),
+            None => entry.remove(key),
+        };
+        entry
+    };
+
+    let (ok, errors) = validate_manifest_data(&manifest_with(str_entry(&good)));
+    if !ok {
+        return Err(format!("Well-formed tarball entry rejected: {errors:?}"));
+    }
+
+    let bad_cases: [(&str, Option<&str>); 9] = [
+        ("url", Some("http://ziglang.org/zig.tar.xz")),
+        ("sha256", Some(&SHA[..63])),
+        (
+            "sha256",
+            Some("3581863E3CBCFD0FCE0EFC682CE7E9E93DA96668A977791D356A26D2A7E9B17A"),
+        ),
+        ("sha256", None),
+        ("install_dir", Some("opt/zig")),
+        ("install_dir", Some("/")),
+        ("binary", None),
+        ("binary", Some("../zig")),
+        ("version", None),
+    ];
+    for (key, val) in bad_cases {
+        let (ok, errors) = validate_manifest_data(&manifest_with(with_override(key, val)));
+        if ok
+            || !errors
+                .iter()
+                .any(|e| e.contains("(tarball)") && e.contains(key))
+        {
+            return Err(format!(
+                "Expected tarball {key}={val:?} to be rejected, got ok={ok}, errors={errors:?}"
+            ));
+        }
+    }
+
+    let plan = execute_tool_install(&str_entry(&good), Path::new("/nonexistent"), true)?;
+    if plan.status.as_deref() != Some("dry-run") || !plan.to_json(0).contains(SHA) {
+        return Err(format!("Dry-run plan lacks sha256: {}", plan.to_json(0)));
+    }
+    if !plan
+        .steps
+        .iter()
+        .any(|s| s.contains("--strip-components=1"))
+    {
+        return Err(format!(
+            "Dry-run plan lacks extraction step: {:?}",
+            plan.steps
+        ));
+    }
+    Ok(())
+}
+
+pub fn test_replace_symlink_refuses_regular_file() -> Result<(), String> {
+    let dir = make_temp_dir("novos-symlink-test-")?;
+    let result = (|| {
+        let dest = dir.join("dest");
+        fs::write(&dest, b"bin").map_err(|e| e.to_string())?;
+        let link = dir.join("link");
+        replace_symlink(&dest, &link)?;
+        replace_symlink(&dest, &link)?;
+        if fs::read_link(&link).map_err(|e| e.to_string())? != dest {
+            return Err("Symlink does not point at dest".to_string());
+        }
+        let regular = dir.join("regular");
+        fs::write(&regular, b"keep").map_err(|e| e.to_string())?;
+        if replace_symlink(&dest, &regular).is_ok() {
+            return Err("Regular file was overwritten".to_string());
+        }
+        if fs::read(&regular).map_err(|e| e.to_string())? != b"keep" {
+            return Err("Regular file content changed".to_string());
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
 type SelfTestFn = fn() -> Result<(), String>;
 
 pub fn run_self_tests() -> i32 {
-    let tests: [(&str, SelfTestFn); 4] = [
+    let tests: [(&str, SelfTestFn); 6] = [
         (
             "test_default_manifest_validates",
             test_default_manifest_validates,
@@ -1514,6 +1844,14 @@ pub fn run_self_tests() -> i32 {
         (
             "test_invalid_manifest_rejected",
             test_invalid_manifest_rejected,
+        ),
+        (
+            "test_tarball_validation_and_plan",
+            test_tarball_validation_and_plan,
+        ),
+        (
+            "test_replace_symlink_refuses_regular_file",
+            test_replace_symlink_refuses_regular_file,
         ),
     ];
 
@@ -1982,5 +2320,15 @@ mod tests {
     #[test]
     fn unit_invalid_manifest_rejected() {
         test_invalid_manifest_rejected().unwrap();
+    }
+
+    #[test]
+    fn unit_tarball_validation_and_plan() {
+        test_tarball_validation_and_plan().unwrap();
+    }
+
+    #[test]
+    fn unit_replace_symlink_refuses_regular_file() {
+        test_replace_symlink_refuses_regular_file().unwrap();
     }
 }

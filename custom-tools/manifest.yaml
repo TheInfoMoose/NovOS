@@ -2,7 +2,7 @@
 # NovOS Custom Tools & Ultrawide Component Manifest
 # ==============================================================================
 # Consumed by `/usr/local/bin/novos-custom-tools` during image build or post-boot
-# provisioning. Supports `local`, `github_release`, and `github_source` types.
+# provisioning. Supports `local`, `github_release`, `github_source`, and `tarball` types.
 
 schema_version: 1
 
@@ -49,3 +49,14 @@ tools:
     build_system: "uv"
     build_command: "uv tool install ."
     install_target: "/usr/local/bin/ruff"
+
+  - name: zig
+    enabled: false # installed by the dev profile via `--tool zig`, not by `--install-enabled`
+    type: tarball
+    description: "Zig compiler, official ziglang.org x86_64-linux tarball pinned by sha256"
+    version: "0.17.1"
+    url: "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
+    sha256: "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
+    install_dir: "/opt/zig"
+    binary: "zig"
+    install_target: "/usr/local/bin/zig"
