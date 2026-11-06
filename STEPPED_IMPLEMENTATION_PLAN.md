@@ -113,7 +113,7 @@
 | **STEP 8D** | COMPLETED | `/goal` | Port domain skills (Skills.md §3.1–3.3) | `.claude/skills/novos-linux-toolchain/SKILL.md`, `.claude/skills/novos-build-automation/SKILL.md`, `.claude/skills/novos-debugging/SKILL.md` |
 | **STEP 8E** | **COMPLETED** | `/goal` | Workflow skills `/plan-argon`, `/goal`, `/boost` | `.claude/skills/plan-argon/SKILL.md`, `.claude/skills/goal/SKILL.md`, `.claude/skills/boost/SKILL.md` |
 | **STEP 8F** | **COMPLETED** | `/boost` | Rewrite `CLAUDE.md`, reduce `AGENTS.md` to pointer, retire `.agents/` with parity table | `CLAUDE.md`, `AGENTS.md`, `.agents/*` (DEL) |
-| **STEP 9A** | PLANNED | `/goal` | Author unified package manifest (lossless migration) | `config/packages.yaml` |
+| **STEP 9A** | **COMPLETED** | `/goal` | Author unified package manifest (lossless migration) | `config/packages.yaml` |
 | **STEP 9B** | PLANNED | `/boost` | `novos-custom-tools packages` subcommands + tests | `crates/novos-custom-tools/src/main.rs`, `crates/novos-custom-tools/src/packages.rs` |
 | **STEP 9C** | PLANNED | `/goal` | Render `netinstall.yaml` from manifest + drift gate | `calamares/modules/netinstall.yaml`, `scripts/lib/verify-deps.sh` |
 | **STEP 9D** | PLANNED | `/boost` | Remove fallback marker debs; profiles read manifest | `scripts/stages/05-profiles-installer.sh`, `scripts/lib/verify-deps.sh` |
@@ -583,7 +583,7 @@ python3 - <<'PY'
 import re,yaml,subprocess,sys
 new=yaml.safe_load(open("config/packages.yaml"))
 def walk(g):
-    for x in g.get("packages",[]) or []: yield x["name"] if isinstance(x,dict) else x
+    for x in g.get("packages",[]) or []: yield (x["name"]+(":i386" if x.get("arch")=="i386" else "")) if isinstance(x,dict) else x
     for s in g.get("subgroups",[]) or []: yield from walk(s)
 names={n for g in new["groups"] for n in walk(g)}
 old=set()

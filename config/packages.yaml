@@ -1,0 +1,647 @@
+# ==============================================================================
+# NovOS Unified Package Manifest (config/packages.yaml)
+# Single source of truth. Removing or disabling an entry requires explicit user approval (guard-diff).
+#
+# Migrated losslessly in STEP 9A from:
+#   scripts/stages/03-core-system.sh   -> layer: base
+#   scripts/stages/04-cosmic-desktop.sh -> layer: desktop (cargo/rustc build fallback -> base)
+#   calamares/modules/netinstall.yaml   -> layer: profile (group/subgroup names, descriptions, flags verbatim)
+#   scripts/stages/05-profiles-installer.sh install_*_profile (safe_apt_install) and
+#   configure_*_flathub (flatpak install) -> layer: profile
+# Entry fields: name, source (apt|flatpak|novos-meta), arch (amd64|i386|all), required,
+# alternative (name|null), smoke (null until a smoke check is defined).
+# ==============================================================================
+schema_version: 1
+groups:
+  - id: base-core
+    name: "Core Base Utilities & PAM Session Stack"
+    description: "Stage 3.2 core utilities, boot/filesystem tools, PAM session stack and debconf helpers."
+    layer: base
+    selected: true
+    critical: true
+    packages:
+      - {name: tzdata, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: locales, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: passwd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: adduser, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: sudo, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: curl, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: wget, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gpg, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: ca-certificates, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: git, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: build-essential, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: kmod, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: xz-utils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: zstd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: initramfs-tools-core, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: udev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: klibc-utils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: busybox, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: btrfs-progs, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: dosfstools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: parted, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: fdisk, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gdisk, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: efibootmgr, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: snapper, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: dracut, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: network-manager, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: inotify-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gawk, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: coreutils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: util-linux, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: util-linux-extra, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: systemd-timesyncd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libpam-systemd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: dbus-user-session, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: polkitd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: whiptail, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: dialog, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: debconf-utils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: python3, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: pciutils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: usbutils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: lsb-release, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: base-kernels
+    name: "Dual Kernels (XanMod x64v3 Primary + Debian Fallback)"
+    description: "Stage 3.6 Debian fallback kernel/headers and XanMod x64v3 primary kernel meta-package."
+    layer: base
+    selected: true
+    critical: true
+    packages:
+      - {name: linux-image-amd64, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: linux-headers-amd64, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: linux-xanmod-x64v3, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: base-kernel-build
+    name: "Kernel Module Build Toolchain"
+    description: "Stage 3.6 DKMS and LLVM/Clang toolchain for out-of-tree kernel modules."
+    layer: base
+    selected: true
+    critical: true
+    packages:
+      - {name: dkms, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libelf-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: clang, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: lld, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: llvm, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: base-firmware-graphics
+    name: "Firmware, Microcode, WiFi/Bluetooth Base & Mesa RDNA4 Stack"
+    description: "Stage 3.7 AMD/Intel firmware and microcode, wireless/Bluetooth base, Mesa/Vulkan (amd64 + i386) and GPU tools."
+    layer: base
+    selected: true
+    critical: true
+    packages:
+      - {name: firmware-amd-graphics, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: amd64-microcode, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: intel-microcode, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: iwd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: wpasupplicant, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: rfkill, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: wireless-regdb, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: iw, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-iwlwifi, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-realtek, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-atheros, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-mediatek, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-brcm80211, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: firmware-misc-nonfree, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: bluez, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libgbm1, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libegl-mesa0, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libglx-mesa0, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libgl1-mesa-dri, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libglx0, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libegl1, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: mesa-vulkan-drivers, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: mesa-vulkan-drivers, source: apt, arch: i386, required: true, alternative: null, smoke: null}
+      - {name: libvulkan1, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libvulkan1, source: apt, arch: i386, required: true, alternative: null, smoke: null}
+      - {name: mesa-va-drivers, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: mesa-opencl-icd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: vulkan-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: radeontop, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gamemode, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: base-rust-build
+    name: "Rust Build Toolchain (novos-custom-tools)"
+    description: "Stage 4.6 / Stage 5.1b cargo and rustc, installed when cargo is absent to build novos-custom-tools."
+    layer: base
+    selected: true
+    critical: true
+    packages:
+      - {name: cargo, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: rustc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: desktop-spelling
+    name: "Spelling Dictionaries"
+    description: "Stage 4 dictionaries-common and aspell (English)."
+    layer: desktop
+    selected: true
+    critical: true
+    packages:
+      - {name: dictionaries-common, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: aspell, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: aspell-en, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: desktop-cosmic
+    name: "COSMIC Desktop, Session & Audio Stack"
+    description: "Stage 4 COSMIC epoch/utils, greetd/tuigreet, portals, keyring, GVFS, Flatpak/PackageKit, PipeWire/WirePlumber, Bluetooth desktop and fonts."
+    layer: desktop
+    selected: true
+    critical: true
+    packages:
+      - {name: cosmic-epoch-monorepo, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: cosmic-utils-monorepo, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libdisplay-info3, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: greetd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: tuigreet, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: xwayland, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: ffmpeg, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libsm6, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libxext6, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: rtkit, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: upower, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: geoclue-2.0, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: xdg-desktop-portal, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: xdg-user-dirs, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: dbus-x11, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libpam-systemd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libpam-gnome-keyring, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: polkitd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gnome-keyring, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gvfs, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gvfs-backends, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: gvfs-fuse, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: flatpak, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: packagekit, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: appstream, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: pipewire-audio, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: wireplumber, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: libspa-0.2-bluetooth, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: bluez-obexd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: blueman, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: fonts-noto-core, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: fonts-noto-color-emoji, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: fonts-dejavu, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: python3-tk, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: python3-yaml, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: wmctrl, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: wifi
+    name: "Wireless & WiFi Connectivity Stack"
+    description: "Intel, Realtek, Atheros, MediaTek, and Broadcom wireless firmware with iwd and wpa_supplicant daemons. Deselect on wired-only desktops to purge WiFi daemons and firmware."
+    layer: profile
+    profile: wifi
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: wifi-daemons
+        name: "Wireless Daemons & Regulatory Tools"
+        description: "iwd, wpasupplicant, wireless-regdb, iw, and rfkill wireless management utilities."
+        selected: true
+        packages:
+          - {name: novos-profile-wifi, source: novos-meta, arch: all, required: true, alternative: null, smoke: null}
+          - {name: iwd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wpasupplicant, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wireless-regdb, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: iw, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: rfkill, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: wifi-firmware
+        name: "Wireless Network Firmware"
+        description: "WiFi firmware for Intel (iwlwifi), Realtek, Qualcomm Atheros, MediaTek, and Broadcom chipsets."
+        selected: true
+        packages:
+          - {name: novos-profile-wifi, source: novos-meta, arch: all, required: true, alternative: null, smoke: null}
+          - {name: firmware-iwlwifi, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: firmware-realtek, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: firmware-atheros, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: firmware-mediatek, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: firmware-brcm80211, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: bluetooth
+    name: "Bluetooth Audio & Peripherals Stack"
+    description: "BlueZ protocol stack, OBEX file transfer, Blueman desktop manager, and PipeWire Bluetooth audio (LDAC/aptX/AAC). Deselect to purge Bluetooth packages and mask bluetooth.service."
+    layer: profile
+    profile: bluetooth
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: bluetooth-bluez
+        name: "BlueZ Stack & Blueman Desktop Manager"
+        description: "BlueZ daemon, OBEX object exchange daemon, and Blueman graphical device manager."
+        selected: true
+        packages:
+          - {name: novos-profile-bluetooth, source: novos-meta, arch: all, required: true, alternative: null, smoke: null}
+          - {name: bluez, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: bluez-obexd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: blueman, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: bluetooth-pipewire
+        name: "PipeWire Bluetooth Audio Plugin"
+        description: "PipeWire SPA Bluetooth audio plugin for wireless headphones, headsets, and speakers."
+        selected: true
+        packages:
+          - {name: novos-profile-bluetooth, source: novos-meta, arch: all, required: true, alternative: null, smoke: null}
+          - {name: libspa-0.2-bluetooth, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: gaming
+    name: "Gaming & Emulation Suite (XanMod + RDNA4 Optimized)"
+    description: "Steam, Lutris, Heroic, ProtonPlus, Protontricks, Bottles, RPCS3, RetroArch, Dolphin, PCSX2, OpenRGB, CoreCtrl, Gamescope, GameMode, and MangoHud."
+    layer: profile
+    profile: gaming
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: gaming-runtime
+        name: "Core Gaming Runtime & Overlays"
+        description: "GameMode, Gamescope micro-compositor, MangoHud, GOverlay, and Vulkan tools."
+        selected: true
+        packages:
+          - {name: gamemode, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: gamescope, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: mangohud, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: goverlay, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: vulkan-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: gaming-lutris-wine
+        name: "Lutris & Wine Compatibility Layer"
+        description: "Lutris game manager, Wine, and Winetricks helper scripts."
+        selected: true
+        packages:
+          - {name: lutris, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wine, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: winetricks, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wine64, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wine32, source: apt, arch: i386, required: true, alternative: null, smoke: null}
+          - {name: libwine, source: apt, arch: i386, required: true, alternative: null, smoke: null}
+      - id: gaming-emulators
+        name: "Console & Handheld Emulators"
+        description: "RetroArch multi-system frontend, Dolphin (GameCube/Wii), and PCSX2 (PlayStation 2)."
+        selected: true
+        packages:
+          - {name: retroarch, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: dolphin-emu, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: pcsx2, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: gaming-rgb-gpu
+        name: "Hardware RGB & GPU Control"
+        description: "OpenRGB lighting control and CoreCtrl AMD GPU/CPU profile manager."
+        selected: true
+        packages:
+          - {name: openrgb, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: corectrl, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: gaming-flathub
+        name: "Flathub Gaming Launchers (via novos-setup)"
+        description: "Provisions Steam, Heroic Games Launcher, ProtonPlus, Protontricks, Bottles, and RPCS3 via Flatpak."
+        selected: true
+        packages:
+          - {name: flatpak, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.valvesoftware.Steam, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.heroicgameslauncher.hgl, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.vysp3r.ProtonPlus, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.github.Matoking.protontricks, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.usebottles.bottles, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: net.rpcs3.RPCS3, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: dev
+    name: "Development, Antigravity, Containers & Virtualization"
+    description: "Google Antigravity (IDE & agy CLI), VS Code, Neovim, Helix, Docker, Podman, Distrobox, KVM/QEMU, LLVM/Clang, Rust, Python (uv), Haskell, Node.js, Go, Zig, Ghostty, and Packaging Tools."
+    layer: profile
+    profile: dev
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: dev-antigravity
+        name: "Google Antigravity IDE & CLI"
+        description: "Google Antigravity IDE and agy CLI agentic toolchain."
+        selected: true
+        packages:
+          - {name: antigravity, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-editors
+        name: "Code Editors (VS Code, Neovim & Helix)"
+        description: "Microsoft Visual Studio Code, Neovim, and Helix modal terminal editor."
+        selected: true
+        packages:
+          - {name: code, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: neovim, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: hx, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-containers
+        name: "Docker, Podman & Distrobox Containers"
+        description: "Docker CE, Compose v2, rootless Podman, Buildah, Skopeo, and Distrobox container workflows."
+        selected: true
+        packages:
+          - {name: docker-ce, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: docker-ce-cli, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: containerd.io, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: docker-buildx-plugin, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: docker-compose-plugin, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: podman, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: buildah, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: skopeo, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: distrobox, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-virt
+        name: "KVM / QEMU Hardware Virtualization"
+        description: "QEMU x86_64 hypervisor, libvirt system daemon, and Virt-Manager graphical console."
+        selected: true
+        packages:
+          - {name: qemu-system-x86, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: libvirt-daemon-system, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: virt-manager, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-toolchains
+        name: "Polyglot Compilers & Language Toolchains"
+        description: "LLVM/Clang, CMake, Ninja, Python 3, Haskell (GHC/Cabal/Stack), Node.js/npm, Go, and Zig (plus Rust/uv via novos-setup)."
+        selected: true
+        packages:
+          - {name: clang, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: lld, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: llvm, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: cmake, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: ninja-build, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: python3-full, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: python3-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: python3-pip, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: python3-venv, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: ghc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: cabal-install, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: haskell-stack, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: nodejs, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: npm, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: golang-go, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: zig, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: python3, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: pkg-config, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: libssl-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: libudev-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-git-terminals
+        name: "Git Workflows & GPU-Accelerated Terminals"
+        description: "GitHub CLI (gh), Lazygit TUI, Alacritty, and Ghostty GPU-accelerated terminal emulators."
+        selected: true
+        packages:
+          - {name: gh, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: lazygit, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: alacritty, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: ghostty, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: dev-packaging
+        name: "AppImage, RPM & DEB Packaging Tools"
+        description: "Alien package converter, rpm2cpio, cpio, patchelf, squashfs-tools, desktop-file-utils, and zsync."
+        selected: true
+        packages:
+          - {name: alien, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: rpm2cpio, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: cpio, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: patchelf, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: squashfs-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: desktop-file-utils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: zsync, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: strace, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: fakeroot, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: devsecops
+    name: "DevSecOps, Pentesting & Kali Rolling Box (novos-sec-box)"
+    description: "Offensive/defensive security suite with Nmap, Wireshark, John, Hashcat, Aircrack-ng, Radare2, UFW/Firewalld, and isolated Kali Rolling Distrobox integration (novos-sec-box)."
+    layer: profile
+    profile: devsecops
+    selected: false
+    critical: false
+    expanded: false
+    subgroups:
+      - id: devsecops-network
+        name: "Network Discovery & Packet Analysis"
+        description: "Nmap network scanner, Wireshark graphical analyzer, TShark CLI, tcpdump, and OpenBSD netcat."
+        selected: false
+        packages:
+          - {name: nmap, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: wireshark, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: tshark, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: tcpdump, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: netcat-openbsd, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: devsecops-passwords
+        name: "Password & Wireless Auditing"
+        description: "John the Ripper, Hashcat GPU password recovery, Aircrack-ng wireless suite, and THC-Hydra."
+        selected: false
+        packages:
+          - {name: john, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: hashcat, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: aircrack-ng, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: hydra, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: devsecops-web-re
+        name: "Web Assessment & Reverse Engineering"
+        description: "SQLMap, Gobuster directory scanner, Radare2 reverse engineering framework, and GDB."
+        selected: false
+        packages:
+          - {name: sqlmap, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: gobuster, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: radare2, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: gdb, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: devsecops-firewalls
+        name: "Host Firewalls"
+        description: "Uncomplicated Firewall (UFW) and dynamically managed Firewalld."
+        selected: false
+        packages:
+          - {name: ufw, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: firewalld, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: devsecops-kali-box
+        name: "Kali Rolling Distrobox Environment (novos-sec-box)"
+        description: "Podman and Distrobox runtime backing /usr/local/bin/novos-sec-box (kalilinux/kali-rolling)."
+        selected: false
+        packages:
+          - {name: distrobox, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: podman, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: llm
+    name: "Local AI, Hosted LLM & ComfyUI Stack (/srv/llm)"
+    description: "Ollama & llama.cpp (ROCm/Vulkan RDNA4 accelerated), Containerized ComfyUI & Open WebUI bound to @llm, Hugging Face CLI (hf), nvtop, and amdgpu_top."
+    layer: profile
+    profile: llm
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: llm-monitors
+        name: "GPU & System Monitors"
+        description: "nvtop, radeontop, btop, and ROCm System Management Interface (rocm-smi)."
+        selected: true
+        packages:
+          - {name: nvtop, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: radeontop, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: btop, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: rocm-smi, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: llm-vulkan-build
+        name: "Vulkan & Compute Build Dependencies"
+        description: "Vulkan development headers, GLSL/SPIR-V shader compilers (glslang-tools, spirv-tools), and libcurl OpenSSL headers for llama.cpp."
+        selected: true
+        packages:
+          - {name: libcurl4-openssl-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: libvulkan-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: glslang-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: spirv-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: glslc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: network
+    name: "Workstation Network, Remote & NAS (DevShare)"
+    description: "Samba [DevShare] at /srv/devshare, Remmina (RDP/VNC), Tailscale, WireGuard, OpenSSH Server, Syncthing, and Rclone."
+    layer: profile
+    profile: network
+    selected: true
+    critical: false
+    expanded: false
+    subgroups:
+      - id: network-samba
+        name: "Samba DevShare NAS (/srv/devshare)"
+        description: "Samba server, SMB client utilities, and CIFS filesystem support."
+        selected: true
+        packages:
+          - {name: samba, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: smbclient, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: cifs-utils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: network-remmina
+        name: "Remmina Remote Desktop Client"
+        description: "Remmina remote desktop client with RDP and VNC protocol plugins."
+        selected: true
+        packages:
+          - {name: remmina, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: remmina-plugin-rdp, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: remmina-plugin-vnc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: network-vpn-ssh
+        name: "VPN, Mesh Networking & SSH Server"
+        description: "WireGuard VPN tools, Tailscale mesh VPN, and OpenSSH Server daemon."
+        selected: true
+        packages:
+          - {name: wireguard-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: openssh-server, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: tailscale, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: network-sync
+        name: "Cloud & Peer-to-Peer File Sync"
+        description: "Syncthing continuous file synchronization and Rclone cloud storage swiss-army knife."
+        selected: true
+        packages:
+          - {name: syncthing, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: rclone, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: comms
+    name: "Web Browsers, Email & Team Communications"
+    description: "Firefox ESR, Chromium, Thunderbird, plus Flathub browsers and encrypted team messengers (Brave, LibreWolf, Zen Browser, Discord, Vesktop, Signal, Element)."
+    layer: profile
+    profile: comms
+    selected: false
+    critical: false
+    expanded: false
+    subgroups:
+      - id: comms-native
+        name: "Native Web Browsers & Email Client"
+        description: "Mozilla Firefox ESR, Chromium web browser, and Mozilla Thunderbird email/calendar suite."
+        selected: false
+        packages:
+          - {name: firefox-esr, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: chromium, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: thunderbird, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: comms-flathub
+        name: "Flathub Browsers & Team Communications (via novos-setup)"
+        description: "Provisions Brave, LibreWolf, Zen Browser, Discord, Vesktop, Signal, and Element via Flatpak."
+        selected: false
+        packages:
+          - {name: flatpak, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.brave.Browser, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: io.gitlab.librewolf-community, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: app.zen_browser.zen, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.discordapp.Discord, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: dev.vencord.Vesktop, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: org.signal.Signal, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: im.riot.Riot, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: media
+    name: "Media, Pro Audio & 2D/3D Creative Suite"
+    description: "VLC, mpv, HandBrake, OBS Studio, Kdenlive, GIMP, Inkscape, Krita, Darktable, Blender, FreeCAD, Audacity, Ardour, and PipeWire JACK."
+    layer: profile
+    profile: media
+    selected: false
+    critical: false
+    expanded: false
+    subgroups:
+      - id: media-playback
+        name: "Media Playback & Video Transcoding"
+        description: "VLC media player, mpv minimalist player, and HandBrake video transcoder."
+        selected: false
+        packages:
+          - {name: vlc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: mpv, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: handbrake, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: media-streaming
+        name: "Streaming & Non-Linear Video Editing"
+        description: "OBS Studio for recording/streaming and Kdenlive video editor."
+        selected: false
+        packages:
+          - {name: obs-studio, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: kdenlive, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: media-2d
+        name: "2D Design, Digital Painting & RAW Photography"
+        description: "GIMP image editor, Inkscape vector graphics, Krita digital painting, and Darktable RAW workflow."
+        selected: false
+        packages:
+          - {name: gimp, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: inkscape, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: krita, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: darktable, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: media-3d
+        name: "3D Creation & Parametric CAD"
+        description: "Blender 3D creation suite and FreeCAD parametric 3D modeler."
+        selected: false
+        packages:
+          - {name: blender, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: freecad, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: media-audio
+        name: "Pro Audio DAW & PipeWire JACK Routing"
+        description: "Audacity audio editor, Ardour digital audio workstation, and PipeWire low-latency JACK bridge."
+        selected: false
+        packages:
+          - {name: audacity, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: ardour, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: pipewire-jack, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+
+  - id: utilities
+    name: "System Administration, Btrfs & Office Productivity"
+    description: "LibreOffice, Timeshift, Btrfs Assistant, GParted, KeePassXC, Fastfetch, tmux, ripgrep, fd-find, plus Mission Center, LocalSend, and Bitwarden."
+    layer: profile
+    profile: utilities
+    selected: false
+    critical: false
+    expanded: false
+    subgroups:
+      - id: utilities-office
+        name: "LibreOffice Productivity Suite"
+        description: "Full LibreOffice suite (Writer, Calc, Impress, Draw)."
+        selected: false
+        packages:
+          - {name: libreoffice, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: utilities-btrfs
+        name: "Btrfs Management & Partitioning"
+        description: "Timeshift system restore, Btrfs Assistant GUI, and GParted partition editor."
+        selected: false
+        packages:
+          - {name: timeshift, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: btrfs-assistant, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: gparted, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: utilities-cli
+        name: "Power CLI & Workstation Utilities"
+        description: "Fastfetch, KeePassXC password manager, tmux multiplexer, ripgrep, and fd-find."
+        selected: false
+        packages:
+          - {name: fastfetch, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: keepassxc, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: tmux, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: ripgrep, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: fd-find, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - id: utilities-flathub
+        name: "Flathub Power Tools (via novos-setup)"
+        description: "Provisions Mission Center, LocalSend, and Bitwarden via Flatpak."
+        selected: false
+        packages:
+          - {name: flatpak, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: io.missioncenter.MissionCenter, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: org.localsend.localsend_app, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: com.bitwarden.desktop, source: flatpak, arch: amd64, required: true, alternative: null, smoke: null}
