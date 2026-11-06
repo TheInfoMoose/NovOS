@@ -7,7 +7,7 @@ argument-hint: STEP <ID>
 
 # /goal STEP <ID> — Single Bounded Step Execution
 
-Source rules: `.agents/rules/argon-step-scope-lock.md` §1–§2, AGENTS.md §2.4 and §2.5 (EXECUTE mode).
+Source rules: CLAUDE.md §4 (step scope lock, 4-phase gates, single-step halt) and §5 (EXECUTE mode); provenance in the CLAUDE.md Parity Table.
 `step-lock.sh` records the step in `.claude/state/active-step`; `guard-edit.sh` then blocks any path outside that step's `ALLOWED_FILES`.
 
 ## Protocol (in order, no skipping)

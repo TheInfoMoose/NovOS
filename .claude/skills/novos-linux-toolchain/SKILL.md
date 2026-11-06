@@ -5,7 +5,7 @@ description: Load when touching NovOS kernel configuration, rootfs bootstrapping
 
 # NovOS Low-Level Linux Architecture & Toolchain
 
-Ported from `.agents/skills/Skills.md` §3.1 (AGENTS.md §3.1). Applies to all agents, not only Argon.
+Source: former Skills.md §3.1 (retired in STEP 8F); provenance in the CLAUDE.md Parity Table. Applies to all agents, not only Argon.
 
 ## Kernel Configuration & Compiling (make menuconfig / Kconfig)
 - Never run `make menuconfig` (or `nconfig`/`xconfig`): interactive curses menus hang headless agent loops.
@@ -22,7 +22,7 @@ Ported from `.agents/skills/Skills.md` §3.1 (AGENTS.md §3.1). Applies to all a
 - NovOS: the host build is run by the user (`sudo ./scripts/build-novos.sh`); agents never invoke `sudo`.
 
 ## Bootloader & Firmware Integration
-- Write deterministic disk-partitioning scripts with `sfdisk` or `parted` using non-interactive heredocs. Agents author these scripts; they never execute partitioning/formatting commands themselves (AGENTS.md §2.2).
+- Write deterministic disk-partitioning scripts with `sfdisk` or `parted` using non-interactive heredocs. Agents author these scripts; they never execute partitioning/formatting commands themselves (CLAUDE.md §2).
 - Standardize on GPT: dedicated EFI System Partition (ESP) for UEFI targets, BIOS boot partition for legacy systems.
 - Manage bootloader configuration (generic: GRUB2, Limine, systemd-boot) with UUID-pinned root mappings.
 - Orchestrate `dracut` or `mkinitramfs` with explicit `--add-drivers` manifests so all essential storage, bus, and filesystem modules are baked into the initramfs.

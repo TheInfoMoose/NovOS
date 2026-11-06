@@ -5,7 +5,7 @@ description: Load when diagnosing a failed NovOS build, kernel panic, boot hang,
 
 # NovOS Problem Shaping & Iterative Debugging (ReAct Loops)
 
-Ported from `.agents/skills/Skills.md` §3.3 (AGENTS.md §3.3).
+Source: former Skills.md §3.3 (retired in STEP 8F); provenance in the CLAUDE.md Parity Table.
 
 ## Inputs: user-supplied logs
 - The user runs host builds and VM tests and supplies results in `logs/` (e.g. `logs/qemu-artifacts/`). Read from there.
@@ -19,7 +19,7 @@ Ported from `.agents/skills/Skills.md` §3.3 (AGENTS.md §3.3).
 
 ## State Management & Checkpointing
 - OS builds are compute-intensive; discrete checkpoint directories (e.g. `build/base-rootfs.tar.gz`, `build/kernel-out/`) may speed iterative inner-loop investigation so a bootloader or ISO-packing mistake does not force a full kernel recompile.
-- **Final verification is always fresh, Stages 1→6.** Checkpoints and partial resumes never count as verification (AGENTS.md §1).
+- **Final verification is always fresh, Stages 1→6.** Checkpoints and partial resumes never count as verification (CLAUDE.md §1).
 
 ## Context Window Protection
 - Build logs reach hundreds of thousands of lines and cause premature context compaction (~135k tokens) and context dilution.

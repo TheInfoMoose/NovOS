@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # /plan-argon — Argon Stepped Plan Authoring
 
-Source rules: `.agents/rules/argon-step-scope-lock.md` §3, AGENTS.md §2.4 (Planning Invariants) and §2.5 (PLAN mode).
+Source rules: CLAUDE.md §4 (step scope lock, planning invariants) and §5 (PLAN mode); provenance in the CLAUDE.md Parity Table.
 
 ## Mode
 - `step-lock.sh` puts the session in PLAN mode on `/plan-argon` or a prompt starting with `/plan`: only `STEPPED_IMPLEMENTATION_PLAN.md` is editable. Do not edit code, scripts, configs or other docs this turn.

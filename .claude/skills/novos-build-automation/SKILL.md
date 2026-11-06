@@ -5,7 +5,7 @@ description: Load when writing or changing NovOS build pipeline code (scripts/bu
 
 # NovOS Deterministic Scripting & Automation
 
-Ported from `.agents/skills/Skills.md` §3.2 (AGENTS.md §3.2).
+Source: former Skills.md §3.2 (retired in STEP 8F); provenance in the CLAUDE.md Parity Table.
 
 ## Build Pipeline Orchestration
 - Do not issue long chained bash commands directly in the agent loop. Encode work in modular scripts, Makefiles, Nix derivations, or containerized Podman/Docker recipes.
@@ -22,7 +22,7 @@ Ported from `.agents/skills/Skills.md` §3.2 (AGENTS.md §3.2).
 | 5 | `05-profiles-installer.sh` | (chroot) Profile provisioner (`novos-setup`), Calamares |
 | 6 | `06-snapshot-finalize.sh` | (host/clean namespace) Verification, initramfs, squashfs + ISO |
 
-- Every build is fresh, Stages 1→6. `--from-stage`/partial resumes do not exist and must not be reintroduced (AGENTS.md §1).
+- Every build is fresh, Stages 1→6. `--from-stage`/partial resumes do not exist and must not be reintroduced (CLAUDE.md §1).
 - Orchestrator: `scripts/build-novos.sh` — run by the user only: `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`.
 
 ## Filesystem & ISO Generation
@@ -38,4 +38,4 @@ Ported from `.agents/skills/Skills.md` §3.2 (AGENTS.md §3.2).
   `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars`
   Other flags: `--vm-dir`, `--disk`, `--disk-size`, `--gl`, `--ram`, `--cpus`.
 - `scripts/test-docker-qemu.py` — two-tier automated harness (Tier 1 `live-boot`: Limine handoff, serial/SSH milestone, `/etc/os-release` `ID=novos`, `novos-custom-tools --self-test`; Tier 2: install). Flags: `--iso`, `--tier`, `--vnc`/`--no-vnc`, `--item`, `--timeout`, `--ram`. Artifacts land in `logs/qemu-artifacts/`.
-- Prefer the typed MCP route (`nebulous_ci` `nebulous_run_qemu_test` / `nebulous_run_docker_build`) when available (AGENTS.md §2.3). VM tests are user-run unless explicitly requested.
+- Prefer the typed MCP route (`nebulous_ci` `nebulous_run_qemu_test` / `nebulous_run_docker_build`) when available (CLAUDE.md §3). VM tests are user-run unless explicitly requested.

@@ -7,7 +7,7 @@ argument-hint: STEP <ID>
 
 # /boost STEP <ID> — Step Execution with Independent Verification
 
-Source rules: `.agents/rules/argon-step-scope-lock.md` §1–§3, AGENTS.md §2.4 and §2.5 (EXECUTE mode).
+Source rules: CLAUDE.md §4 (step scope lock, 4-phase gates, single-step halt) and §5 (EXECUTE mode); provenance in the CLAUDE.md Parity Table.
 Same scope enforcement as `/goal`: `step-lock.sh` sets `.claude/state/active-step`; `guard-edit.sh` blocks paths outside `ALLOWED_FILES`.
 
 ## Protocol (in order, no skipping)
