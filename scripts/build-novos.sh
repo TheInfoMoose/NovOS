@@ -14,7 +14,6 @@ source "${REPO_ROOT}/config/build.env"
 source "${SCRIPT_DIR}/lib/verify-deps.sh"
 
 TARGET_MODE="${TARGET_MODE_DEFAULT:-iso}"
-FROM_STAGE=1
 CLI_PROFILES=""
 
 usage() {
@@ -24,8 +23,7 @@ Usage: sudo $0 [OPTIONS]
 Target Options (defaults to --target-iso ${ISO_PATH}):
   --target-iso [path.iso]       Build Clean-Room Hybrid Live + Calamares Installer ISO (default: ${ISO_PATH})
 
-Build Options:
-  --from-stage <1..6>           Resume build starting at stage N (default: 1)
+Build Options (every build runs Stages 1-6 fresh; resuming is not supported):
   --profiles <list>             Comma-separated profiles to install at Stage 5:
                                 gaming,dev,llm,network (default: ${BUILD_PROFILES})
   --build-iso                   Compatibility flag (ISO mode is always active)
@@ -43,10 +41,6 @@ while [[ $# -gt 0 ]]; do
             else
                 shift
             fi
-            ;;
-        --from-stage)
-            FROM_STAGE="$2"
-            shift 2
             ;;
         --profiles)
             CLI_PROFILES="$2"
@@ -102,32 +96,48 @@ trap cleanup EXIT
 # 1. Verify Host Build Dependencies
 verify_host_deps "iso"
 
+# Always compile novos-custom-tools fresh from the checked-out sources (never ship a stale binary).
 ensure_host_rust_binaries() {
-    if [[ -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-        return 0
-    fi
     local cargo_bin=""
     local sudo_home=""
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
+    local run_as=()
+    local cargo_env=()
+    local bin_path="${REPO_ROOT}/target/release/novos-custom-tools"
+
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        sudo_home="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
+        run_as=(runuser -u "${SUDO_USER}" --)
     fi
     if [[ -n "$sudo_home" && -x "${sudo_home}/.cargo/bin/cargo" ]]; then
         cargo_bin="${sudo_home}/.cargo/bin/cargo"
     elif command -v cargo >/dev/null 2>&1; then
         cargo_bin="$(command -v cargo)"
+    else
+        echo "[FATAL] cargo not found (checked ~${SUDO_USER:-root}/.cargo/bin and PATH); cannot build novos-custom-tools." >&2
+        exit 1
     fi
-    if [[ -n "$cargo_bin" ]]; then
-        local cargo_env=()
-        if [[ -n "$sudo_home" ]]; then
-            [[ -d "${sudo_home}/.cargo" && -z "${CARGO_HOME:-}" ]] && cargo_env+=("CARGO_HOME=${sudo_home}/.cargo")
-            [[ -d "${sudo_home}/.rustup" && -z "${RUSTUP_HOME:-}" ]] && cargo_env+=("RUSTUP_HOME=${sudo_home}/.rustup")
-        fi
-        echo "==> Building NovOS Rust workspace binaries on host (${cargo_bin})..."
-        env "${cargo_env[@]}" "$cargo_bin" build --release --offline --manifest-path "${REPO_ROOT}/Cargo.toml" 2>/dev/null || \
-            env "${cargo_env[@]}" "$cargo_bin" build --release --manifest-path "${REPO_ROOT}/Cargo.toml" || true
-        if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && -d "${REPO_ROOT}/target" ]]; then
-            chown -R "${SUDO_UID}:${SUDO_GID}" "${REPO_ROOT}/target" 2>/dev/null || true
-        fi
+    if [[ -n "$sudo_home" ]]; then
+        [[ -d "${sudo_home}/.cargo" && -z "${CARGO_HOME:-}" ]] && cargo_env+=("CARGO_HOME=${sudo_home}/.cargo")
+        [[ -d "${sudo_home}/.rustup" && -z "${RUSTUP_HOME:-}" ]] && cargo_env+=("RUSTUP_HOME=${sudo_home}/.rustup")
+    fi
+    # Earlier root-run builds may have left root-owned artifacts; hand target/ back to the invoking user.
+    if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && -d "${REPO_ROOT}/target" ]]; then
+        chown -R "${SUDO_UID}:${SUDO_GID}" "${REPO_ROOT}/target"
+    fi
+
+    local build_start
+    build_start="$(date +%s)"
+    echo "==> Building novos-custom-tools fresh on host (${cargo_bin}, --locked)..."
+    if ! "${run_as[@]}" env "${cargo_env[@]}" "$cargo_bin" clean --release -p novos-custom-tools \
+            --manifest-path "${REPO_ROOT}/Cargo.toml" \
+        || ! "${run_as[@]}" env "${cargo_env[@]}" "$cargo_bin" build --release --locked -p novos-custom-tools \
+            --manifest-path "${REPO_ROOT}/Cargo.toml"; then
+        echo "[FATAL] Rust workspace build failed" >&2
+        exit 1
+    fi
+    if [[ ! -x "$bin_path" || "$(stat -c %Y "$bin_path")" -lt "$build_start" ]]; then
+        echo "[FATAL] ${bin_path} was not freshly built by this run" >&2
+        exit 1
     fi
 }
 ensure_host_rust_binaries
@@ -144,26 +154,6 @@ rm -f "$ISO_PATH" \
 rm -rf "${REPO_ROOT}/build/iso_work" "./build/iso_work" 2>/dev/null || true
 
 echo "==> Preparing directory-staged Clean-Room ISO build at ${MOUNT_ROOT} (Output ISO: ${ISO_PATH})..."
-
-# Helper to mount existing staging directory when resuming from stage > 1
-mount_existing_tree() {
-    mkdir -p "$MOUNT_ROOT"
-    if ! mountpoint -q "$MOUNT_ROOT"; then
-        mount --bind "$MOUNT_ROOT" "$MOUNT_ROOT"
-        mount --make-rprivate "$MOUNT_ROOT"
-    fi
-    mkdir -p "${MOUNT_ROOT}/root/novos-build/scripts/lib" "${MOUNT_ROOT}/root/novos-build/target/release"
-    cp -rf "${REPO_ROOT}/config" "${REPO_ROOT}/scripts" "${REPO_ROOT}/branding" "${REPO_ROOT}/calamares" \
-           "${REPO_ROOT}/crates" "${REPO_ROOT}/custom-tools" "${REPO_ROOT}/Cargo.toml" "${MOUNT_ROOT}/root/novos-build/"
-    if [[ -f "${REPO_ROOT}/Cargo.lock" ]]; then
-        cp -f "${REPO_ROOT}/Cargo.lock" "${MOUNT_ROOT}/root/novos-build/Cargo.lock"
-    fi
-    if [[ -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-        install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
-    fi
-    cp -f "${SCRIPT_DIR}/lib/verify-deps.sh" "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
-    chmod +x "${MOUNT_ROOT}/root/novos-build/scripts/stages/"*.sh "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
-}
 
 # Host-agnostic chroot execution wrapper inside private namespace
 run_in_chroot() {
@@ -183,34 +173,15 @@ run_in_chroot() {
     chroot "${MOUNT_ROOT}" /usr/bin/gpgconf --kill all 2>/dev/null || true
 }
 
-# 3. Execute Stages 1 through 6 Sequentially
-if [[ "$FROM_STAGE" -le 1 ]]; then
-    bash "${SCRIPT_DIR}/stages/01-partition-mount.sh" --staging-dir "${MOUNT_ROOT}"
-else
-    mount_existing_tree
-fi
-
-if [[ "$FROM_STAGE" -le 2 ]]; then
-    bash "${SCRIPT_DIR}/stages/02-bootstrap-chroot.sh" --staging-dir "${MOUNT_ROOT}"
-fi
-
-if [[ "$FROM_STAGE" -le 3 ]]; then
-    run_in_chroot "/root/novos-build/scripts/stages/03-core-system.sh"
-fi
-
-if [[ "$FROM_STAGE" -le 4 ]]; then
-    run_in_chroot "/root/novos-build/scripts/stages/04-cosmic-desktop.sh"
-fi
-
-if [[ "$FROM_STAGE" -le 5 ]]; then
-    run_in_chroot "/root/novos-build/scripts/stages/05-profiles-installer.sh"
-fi
-
-if [[ "$FROM_STAGE" -le 6 ]]; then
-    bash "${SCRIPT_DIR}/stages/06-snapshot-finalize.sh"
-    echo "==> Cleaning up ISO staging directory ${MOUNT_ROOT}..."
-    safe_remove_staging_dir "${MOUNT_ROOT}"
-fi
+# 3. Execute Stages 1 through 6 Sequentially (always fresh; no resume path)
+bash "${SCRIPT_DIR}/stages/01-partition-mount.sh" --staging-dir "${MOUNT_ROOT}"
+bash "${SCRIPT_DIR}/stages/02-bootstrap-chroot.sh" --staging-dir "${MOUNT_ROOT}"
+run_in_chroot "/root/novos-build/scripts/stages/03-core-system.sh"
+run_in_chroot "/root/novos-build/scripts/stages/04-cosmic-desktop.sh"
+run_in_chroot "/root/novos-build/scripts/stages/05-profiles-installer.sh"
+bash "${SCRIPT_DIR}/stages/06-snapshot-finalize.sh"
+echo "==> Cleaning up ISO staging directory ${MOUNT_ROOT}..."
+safe_remove_staging_dir "${MOUNT_ROOT}"
 
 # Restore invoking user's ownership on the built ISO so QEMU can run without root
 rm -f "${REPO_ROOT}/build/ovmf_vars.fd" 2>/dev/null || true

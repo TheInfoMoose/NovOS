@@ -1,0 +1,31 @@
+{
+  "deny": [
+    "command(sudo .*)",
+    "command(su .*)",
+    "command(fdisk .*)",
+    "command(parted .*)",
+    "command(mkfs.*)",
+    "command(dd if=.* of=/dev/.*)",
+    "command(flashrom .*)",
+    "command(wipefs .*)",
+    "command(.*nebulous-ctl\\.py\\s+(approve-variance|bless-golden|unlock-loop).*)",
+    "write_file(.nebulous/golden-snapshot.toml)",
+    "write_file(.nebulous/approvals.toml)",
+    "write_file(.nebulous/manifest.toml)",
+    "unsandboxed(*)"
+  ],
+  "ask": [
+    "command(docker .*)",
+    "command(podman .*)",
+    "write_file(/etc/*)",
+    "mcp(*)"
+  ],
+  "allow": [
+    "command(cargo .*)",
+    "command(make .*)",
+    "command(python3 .*)",
+    "mcp(kernel_tools/*)",
+    "mcp(qemu_runner/*)",
+    "mcp(nebulous_ci/*)"
+  ]
+}

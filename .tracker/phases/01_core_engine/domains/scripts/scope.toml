@@ -8,7 +8,6 @@ tech_stack = [
 description = "Promoted from component 'scripts' (scripts)"
 bound_component = "scripts"
 tracked_files = [
-    "scripts/build-live-iso.sh",
     "scripts/build-novos.sh",
     "scripts/generate-branding-assets.py",
     "scripts/lib/verify-deps.sh",
@@ -20,7 +19,6 @@ tracked_files = [
     "scripts/stages/04-cosmic-desktop.sh",
     "scripts/stages/05-profiles-installer.sh",
     "scripts/stages/06-snapshot-finalize.sh",
-    "scripts/stages/07-live-iso.sh",
     "scripts/test-docker-qemu.py",
     "scripts/test-qemu.sh",
 ]

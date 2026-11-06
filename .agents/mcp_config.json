@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "kernel_tools": {
+      "command": "mcp-server-kernel",
+      "timeoutSeconds": 300
+    },
+    "qemu_runner": {
+      "command": "mcp-server-qemu",
+      "timeoutSeconds": 600
+    },
+    "nebulous_ci": {
+      "command": "python3",
+      "args": ["scripts/mcp_nebulous_ci.py"],
+      "timeoutSeconds": 1800
+    }
+  }
+}

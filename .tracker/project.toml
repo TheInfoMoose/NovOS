@@ -162,7 +162,6 @@ tech_stack = [
 tags = []
 flags = []
 files = [
-    "scripts/build-live-iso.sh",
     "scripts/build-novos.sh",
     "scripts/generate-branding-assets.py",
     "scripts/lib/verify-deps.sh",
@@ -174,7 +173,6 @@ files = [
     "scripts/stages/04-cosmic-desktop.sh",
     "scripts/stages/05-profiles-installer.sh",
     "scripts/stages/06-snapshot-finalize.sh",
-    "scripts/stages/07-live-iso.sh",
     "scripts/test-docker-qemu.py",
     "scripts/test-qemu.sh",
 ]
