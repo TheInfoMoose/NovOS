@@ -92,6 +92,9 @@
 * **Before 11C/11D:** Which exact package/app is the broken "native COSMIC Firefox" (package name or `.desktop` file)? Any other COSMIC-native apps observed broken?
 * **Before 11A:** Approve the proposed base admin/storage set listed in Step 11A (add/remove freely).
 * **Before 11B:** Confirm preseeding the Steam license debconf answer at build time is acceptable for a shared distro (alternative: user accepts on first launch).
+* **Decided 2026-11-06 (9G–9J):** the first build after 9E failed at Stage 5.1d on `zig`, `ghostty` and `tailscale` (none are in sid or the configured repos; zig and ghostty had been faked by `0.0.1~novos1` marker debs until 9D). The user chose: tailscale → official signed apt repo; zig → official ziglang.org tarball, pinned version + sha256, through `novos-custom-tools`; ghostty → removed from the image (alacritty stays). No further approval needed for these three.
+* **Before 9I:** zig and ghostty leave the generated Calamares `netinstall.yaml` (the renderer emits apt/novos-meta only). zig still reaches the image through the dev profile (9J). Confirm that is acceptable, or say if zig must stay visible in the installer's package list.
+* **Before 14A:** `docs/PROFILES.md` still lists `ghostty` and apt `zig`; fold that into the docs refresh.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
 
 ---
@@ -119,6 +122,10 @@
 | **STEP 9D** | **COMPLETED** | `/boost` | Remove fallback marker debs; profiles read manifest | `scripts/stages/05-profiles-installer.sh`, `scripts/lib/verify-deps.sh` |
 | **STEP 9E** | **COMPLETED** | `/goal` | Build-time availability gate (fail on unresolvable package) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9F** | PLANNED | `/goal` | Install-time failure report (continue + surface) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh`, `calamares/modules/shellprocess-novos.conf` |
+| **STEP 9G** | PLANNED | `/goal` | Tailscale from its official signed apt repo; drop `curl \| sh` | `scripts/stages/03-core-system.sh`, `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9H** | PLANNED | `/boost` | `tarball` custom-tool type (pinned sha256) + zig entry | `crates/novos-custom-tools/src/main.rs`, `custom-tools/manifest.yaml` |
+| **STEP 9I** | PLANNED | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
+| **STEP 9J** | PLANNED | `/goal` | Dev profile installs `custom-tool` entries (zig) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
@@ -770,6 +777,152 @@ bash -n scripts/stages/05-profiles-installer.sh && ! grep -n '\$' calamares/modu
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh build + QEMU install with gaming,dev profiles; logs to logs/.
+```
+
+---
+
+### STEP 9G: Tailscale from Its Official Signed Apt Repo
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9G: Add Tailscale's official signed apt repo for sid in Stage 3 and remove the curl | sh installer from Stage 5
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/03-core-system.sh
+  - scripts/stages/05-profiles-installer.sh
+READ_ONLY_REFS:
+  - config/build.env (DEBIAN_SUITE="sid")
+  - config/packages.yaml (tailscale: source apt, network profile)
+  - https://pkgs.tailscale.com/stable/debian/sid.tailscale-keyring.list (verified 2026-11-06: `deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian sid main`)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES.
+
+[PRE_GATE]
+grep -q 'download.docker.com/linux/debian/gpg' scripts/stages/03-core-system.sh && grep -q 'tailscale.com/install.sh' scripts/stages/05-profiles-installer.sh
+
+[MUTATION_SPEC]
+1. 03-core-system.sh, Stage 3.2 "Pre-configure Third-Party Repositories" block: after the VS Code repo, add a numbered "Tailscale Repository" entry following the existing pattern:
+   `curl -fsSL https://pkgs.tailscale.com/stable/debian/sid.noarmor.gpg -o /etc/apt/keyrings/tailscale-archive-keyring.gpg` (the .noarmor key is already binary: no gpg --dearmor), `chmod 0644` it, and
+   `echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian ${DEBIAN_SUITE} main" > /etc/apt/sources.list.d/tailscale.list`.
+   A failed key download is fatal (no `|| true`, no `if ... then` fallback). Add tailscale to the block's header comment list.
+2. 05-profiles-installer.sh, network profile configuration: delete the `if [[ "$POST_CALAMARES" != "true" ]] && ! command -v tailscale ...` block that pipes https://tailscale.com/install.sh into sh. tailscale now installs through the manifest's network apt list. Leave every other line unchanged.
+
+[POST_GATE]
+bash -n scripts/stages/03-core-system.sh && bash -n scripts/stages/05-profiles-installer.sh && grep -q 'pkgs.tailscale.com/stable/debian/sid.noarmor.gpg' scripts/stages/03-core-system.sh && grep -q 'signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg' scripts/stages/03-core-system.sh && ! grep -n 'tailscale.com/install.sh' scripts/stages/05-profiles-installer.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 9H: `tarball` Custom-Tool Type and zig Entry
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 9H: Add a checksum-pinned `tarball` tool type to novos-custom-tools and declare zig 0.17.1 with it
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/novos-custom-tools/src/main.rs
+  - custom-tools/manifest.yaml
+READ_ONLY_REFS:
+  - https://ziglang.org/download/index.json (read 2026-11-06: latest stable 0.17.1, x86_64-linux tarball https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz, shasum 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a)
+  - crates/novos-custom-tools/Cargo.toml (no dependencies; keep it that way)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No new crate dependencies (shell out to curl, sha256sum and tar like github_release does).
+
+[PRE_GATE]
+grep -q 'pub const VALID_TOOL_TYPES: \[&str; 3\]' crates/novos-custom-tools/src/main.rs && grep -q -- '"--tool"' crates/novos-custom-tools/src/main.rs
+
+[MUTATION_SPEC]
+1. main.rs: add type `tarball` to VALID_TOOL_TYPES (length 4) and the module doc comment. Required fields: `version`, `url` (https only), `sha256` (exactly 64 lowercase hex), `install_dir` (absolute), `binary` (relative path inside the extracted tree), `install_target` (absolute). Validation errors follow the existing `Tool {name:?} (tarball): ...` style.
+2. main.rs: plan + install for `tarball`: download `url` with curl -fL to a temp file; verify with `sha256sum` and fail on mismatch before extracting; extract with `tar -xf` (handles .tar.xz and .tar.gz) and `--strip-components=1` into `install_dir`; then symlink `install_target` -> `install_dir/binary` (replace an existing symlink, refuse to overwrite a regular file). `--dry-run` prints the plan, including url and sha256, without network access.
+3. main.rs tests: tarball validation passes for a well-formed entry; fails for http url, short/uppercase sha256, relative install_dir, missing binary; dry-run plan contains the sha256. No test touches the network. Keep all existing tests passing.
+4. custom-tools/manifest.yaml: update the header comment to list `tarball`; add
+   `- name: zig`, `enabled: false` (installed by the dev profile via `--tool zig`, not by `--install-enabled`), `type: tarball`, `version: "0.17.1"`, the url and sha256 above, `install_dir: "/opt/zig"`, `binary: "zig"`, `install_target: "/usr/local/bin/zig"`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p novos-custom-tools -- --validate custom-tools/manifest.yaml && cargo run -q -p novos-custom-tools -- --manifest custom-tools/manifest.yaml --tool zig --dry-run | grep -q '3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 9I: `custom-tool` Manifest Source; zig Off Apt; ghostty Removed
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9I: Let config/packages.yaml declare custom-tool entries, move zig to it, remove ghostty, and regenerate netinstall.yaml
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/novos-custom-tools/src/packages.rs
+  - config/packages.yaml
+  - calamares/modules/netinstall.yaml
+READ_ONLY_REFS:
+  - custom-tools/manifest.yaml (zig entry from 9H)
+  - crates/novos-custom-tools/src/main.rs (`--source` already parses through packages::Source::parse)
+  - Open Questions: "Decided 2026-11-06 (9G–9J)" and "Before 9I"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not hand-edit netinstall.yaml: regenerate it with render-netinstall.
+
+[PRE_GATE]
+grep -q 'name: zig' custom-tools/manifest.yaml && grep -q 'type: tarball' custom-tools/manifest.yaml && grep -q '{name: ghostty, source: apt' config/packages.yaml
+
+[MUTATION_SPEC]
+1. packages.rs: add `Source::CustomTool` parsed from and printed as `custom-tool`. Validation: custom-tool entries must be arch amd64 and must not set `alternative`. `list --source custom-tool` returns them; `check-apt` and `render-netinstall` keep their apt (and apt + novos-meta) filters, so custom-tool entries are excluded from both. Update the source error text in packages.rs. Add tests for parse, validation and both exclusions; keep existing tests passing.
+2. config/packages.yaml: change zig in the Polyglot Compilers subgroup to `{name: zig, source: custom-tool, arch: amd64, required: true, alternative: null, smoke: null}`. Delete the ghostty entry from the GPU terminals subgroup (user-approved removal). No other entry changes.
+3. calamares/modules/netinstall.yaml: regenerate exactly as 9C does (`# GENERATED` header + `novos-custom-tools packages render-netinstall config/packages.yaml`). Expected diff: only the `zig` and `ghostty` lines disappear.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p novos-custom-tools -- packages validate config/packages.yaml && cargo run -q -p novos-custom-tools -- packages list config/packages.yaml --source custom-tool | grep -qx zig && ! grep -n 'ghostty' config/packages.yaml calamares/modules/netinstall.yaml && diff <(cargo run -q -p novos-custom-tools -- packages render-netinstall config/packages.yaml) <(grep -v '^# GENERATED' calamares/modules/netinstall.yaml)
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status, including the netinstall.yaml diff.
+```
+
+---
+
+### STEP 9J: Dev Profile Installs `custom-tool` Entries
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9J: Install the dev profile's custom-tool manifest entries (zig) through novos-custom-tools --tool
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/05-profiles-installer.sh
+READ_ONLY_REFS:
+  - config/packages.yaml, custom-tools/manifest.yaml
+  - CLAUDE.md §6 (no `|| true` without `# novos-allow:`)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES.
+
+[PRE_GATE]
+cargo run -q -p novos-custom-tools -- packages list config/packages.yaml --profile dev --source custom-tool | grep -qx zig && grep -q '^install_dev_profile()' scripts/stages/05-profiles-installer.sh
+
+[MUTATION_SPEC]
+1. Add `install_manifest_custom_tools <profile>`: calls `load_manifest_pkgs <profile> custom-tool`, then for each name runs `/usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"`. A failure is fatal (no `|| true`). When `POST_CALAMARES=true`, print that online custom-tool downloads are skipped and return 0, matching the Flathub offline handling.
+2. install_dev_profile: call `install_manifest_custom_tools dev` after the apt install and before configure_dev_runtime.
+3. verify_profile_deps: add `zig` to the dev profile's bins (create the dev case if it does not exist).
+
+[POST_GATE]
+bash -n scripts/stages/05-profiles-installer.sh && grep -q 'install_manifest_custom_tools dev' scripts/stages/05-profiles-installer.sh && grep -q -- '--tool "\$name"' scripts/stages/05-profiles-installer.sh && ! git diff -U0 scripts/stages/05-profiles-installer.sh | grep -E '^\+' | grep '|| true'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.1d must pass with tailscale resolving) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars`; logs to logs/.
 ```
 
 ---
