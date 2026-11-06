@@ -117,7 +117,7 @@
 | **STEP 9B** | **COMPLETED** | `/boost` | `novos-custom-tools packages` subcommands + tests | `crates/novos-custom-tools/src/main.rs`, `crates/novos-custom-tools/src/packages.rs` |
 | **STEP 9C** | **COMPLETED** | `/goal` | Render `netinstall.yaml` from manifest + drift gate | `calamares/modules/netinstall.yaml`, `scripts/lib/verify-deps.sh` |
 | **STEP 9D** | **COMPLETED** | `/boost` | Remove fallback marker debs; profiles read manifest | `scripts/stages/05-profiles-installer.sh`, `scripts/lib/verify-deps.sh` |
-| **STEP 9E** | PLANNED | `/goal` | Build-time availability gate (fail on unresolvable package) | `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9E** | **COMPLETED** | `/goal` | Build-time availability gate (fail on unresolvable package) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9F** | PLANNED | `/goal` | Install-time failure report (continue + surface) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh`, `calamares/modules/shellprocess-novos.conf` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |

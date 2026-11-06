@@ -7,6 +7,8 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
+# Image-build context: novos-setup run from this stage (5.4b) treats a missing package as fatal.
+export NOVOS_CONTEXT=build
 
 source /root/novos-build/config/build.env
 source /root/novos-build/scripts/lib/verify-deps.sh
@@ -47,6 +49,34 @@ cp -f "${REPO_ROOT}/custom-tools/manifest.yaml" /usr/share/novos/custom-tools/ma
 # Unified package manifest: novos-setup profile installers read their package lists from here.
 install -m 0644 "${REPO_ROOT}/config/packages.yaml" /etc/novos/packages.yaml
 /usr/local/bin/novos-custom-tools packages validate /etc/novos/packages.yaml
+
+echo "==> [Stage 5.1d] Build-Time Package Availability Gate (every declared apt package must resolve)..."
+# i386 entries (wine32:i386, libwine:i386) resolve only when Stage 3 registered the foreign architecture.
+if ! dpkg --print-foreign-architectures | grep -qx i386; then
+    echo "[FATAL] dpkg foreign architecture i386 is not registered (Stage 3 'dpkg --add-architecture i386'); i386 manifest entries cannot resolve." >&2
+    exit 1
+fi
+# Fresh package indexes (amd64 + i386) for the configured sid/third-party sources; failure is fatal.
+apt-get update
+# check-apt exit codes: 0 all resolvable, 3 unresolvable packages (listed on stdout), 1/2 runtime/usage error.
+CHECK_APT_RC=0
+UNRESOLVABLE_PKGS="$(/usr/local/bin/novos-custom-tools packages check-apt /etc/novos/packages.yaml --all)" || CHECK_APT_RC=$?
+case "$CHECK_APT_RC" in
+    0)
+        echo "[OK]   All declared apt packages in /etc/novos/packages.yaml resolve."
+        ;;
+    3)
+        echo "[FATAL] Declared packages unavailable in sid/third-party repos:" >&2
+        while IFS= read -r unresolvable_pkg; do
+            [[ -n "$unresolvable_pkg" ]] && echo "  - ${unresolvable_pkg}" >&2
+        done <<< "$UNRESOLVABLE_PKGS"
+        exit 1
+        ;;
+    *)
+        echo "[FATAL] novos-custom-tools packages check-apt /etc/novos/packages.yaml --all failed (exit ${CHECK_APT_RC})." >&2
+        exit 1
+        ;;
+esac
 
 echo "==> [Stage 5.1c] Building Offline APT Repository (/usr/share/novos/apt-markers) for the novos-profile-wifi / novos-profile-bluetooth Meta Packages..."
 MARKER_REPO="/usr/share/novos/apt-markers"
@@ -556,15 +586,25 @@ verify_apt_ready() {
 safe_apt_install() {
     verify_apt_ready
     local available_pkgs=()
+    local missing_pkgs=()
     local pkg
     for pkg in "$@"; do
         [[ -z "$pkg" ]] && continue
         if apt-cache show "$pkg" 2>/dev/null | grep -q '^Package:'; then
             available_pkgs+=("$pkg")
+        elif [[ "${NOVOS_CONTEXT:-}" == "build" ]]; then
+            missing_pkgs+=("$pkg")
         else
-            echo "[WARN] Optional/requested package '${pkg}' not found in APT cache; skipping." >&2
+            echo "[WARN] Optional/requested package '${pkg}' not found in APT cache; skipping (NOVOS_CONTEXT=${NOVOS_CONTEXT:-runtime})." >&2
         fi
     done
+
+    # Image build (NOVOS_CONTEXT=build): a missing package fails the build instead of being skipped.
+    if [[ "${#missing_pkgs[@]}" -gt 0 ]]; then
+        echo "[FATAL] Declared packages unavailable in sid/third-party repos (NOVOS_CONTEXT=build):" >&2
+        printf '  - %s\n' "${missing_pkgs[@]}" >&2
+        exit 1
+    fi
 
     if [[ "${#available_pkgs[@]}" -gt 0 ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y "${available_pkgs[@]}"
