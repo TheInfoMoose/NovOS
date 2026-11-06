@@ -108,7 +108,7 @@
 | **STEP 7D** | **COMPLETED** | `/goal` | Fix README structure + PROFILES slippery note | `README.md`, `docs/PROFILES.md` |
 | **STEP 7E** | **COMPLETED** | `/goal` | Drop deleted paths from `.tracker` scopes | `.tracker/project.toml`, `.tracker/phases/01_core_engine/domains/scripts/scope.toml` |
 | **STEP 8A** | **COMPLETED** | `/boost` | Claude hook guards (Bash deny, protected files, step scope lock) | `.claude/hooks/guard-bash.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/step-lock.sh` |
-| **STEP 8B** | PLANNED | `/goal` | Anti-lazy/over-fix diff guard hook + hook self-test | `.claude/hooks/guard-diff.sh`, `.claude/hooks/test-guards.sh` |
+| **STEP 8B** | **COMPLETED** | `/goal` | Anti-lazy/over-fix diff guard hook + hook self-test | `.claude/hooks/guard-diff.sh`, `.claude/hooks/test-guards.sh` |
 | **STEP 8C** | PLANNED | `/goal` | Register hooks + permissions; project MCP config | `.claude/settings.json`, `.mcp.json` |
 | **STEP 8D** | PLANNED | `/goal` | Port domain skills (Skills.md §3.1–3.3) | `.claude/skills/novos-linux-toolchain/SKILL.md`, `.claude/skills/novos-build-automation/SKILL.md`, `.claude/skills/novos-debugging/SKILL.md` |
 | **STEP 8E** | PLANNED | `/goal` | Workflow skills `/plan-argon`, `/goal`, `/boost` | `.claude/skills/plan-argon/SKILL.md`, `.claude/skills/goal/SKILL.md`, `.claude/skills/boost/SKILL.md` |
