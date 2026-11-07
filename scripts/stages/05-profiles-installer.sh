@@ -349,11 +349,21 @@ cat << 'EOF' > /usr/local/bin/novos-setup
 #   Granular APT:      sudo novos-setup --packages fastfetch,tmux,ripgrep --user devuser
 #   Calamares Pre-Pkg: sudo novos-setup --pre-packages
 #   Calamares Hook:    sudo novos-setup --post-calamares --user devuser
+#   Failure Report:    novos-setup --report [--log-only | --notify]
 # ==============================================================================
 set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 export DEBIAN_FRONTEND=noninteractive
+
+# Install-time failure record (NOVOS_CONTEXT unset = runtime): one row per failed item,
+# `profile<TAB>item<TAB>reason`. NOVOS_CONTEXT=build (Stage 5) never records: failures there are fatal.
+FAILURE_TSV="/var/log/novos/package-failures.tsv"
+INSTALL_REPORT_DESKTOP="/etc/xdg/autostart/novos-install-report.desktop"
+# Profile attributed to recorded failures; load_manifest_pkgs sets it to the profile being installed.
+CURRENT_PROFILE="packages"
+REPORT_MODE="false"
+REPORT_OUTPUT="terminal"
 
 ORIG_ARGS=("$@")
 TARGET_USER="${SUDO_USER:-}"
@@ -430,6 +440,19 @@ while [[ $# -gt 0 ]]; do
             INTERACTIVE="false"
             shift
             ;;
+        --report)
+            REPORT_MODE="true"
+            INTERACTIVE="false"
+            shift
+            ;;
+        --log-only)
+            REPORT_OUTPUT="log"
+            shift
+            ;;
+        --notify)
+            REPORT_OUTPUT="notify"
+            shift
+            ;;
         --user|-u)
             if [[ $# -lt 2 ]]; then
                 echo "[ERROR] Option $1 requires a username argument." >&2
@@ -455,6 +478,10 @@ Options:
   --post-calamares           Apply Calamares netinstall selections, WiFi/Bluetooth opt-outs,
                              Flathub apps, Rust/uv, Ollama/ComfyUI (/srv/llm), and Samba [DevShare]
   --user, -u <username>      Target non-root user to configure (default: primary regular user)
+  --report                   Print install-time package failures (/var/log/novos/package-failures.tsv)
+                             grouped by profile, with retry commands
+    --log-only               With --report: print only (Calamares log); no desktop/user state changes
+    --notify                 With --report: desktop notification (login autostart), then hide the autostart
   --help, -h                 Show this help message
 HELP_EOF
             exit 0
@@ -464,6 +491,73 @@ HELP_EOF
             ;;
     esac
 done
+
+# Prints the failure TSV grouped by profile (duplicate rows collapsed) with a retry command per profile.
+print_failure_report() {
+    if [[ ! -s "$FAILURE_TSV" ]]; then
+        echo "[OK]   No install-time package failures recorded (${FAILURE_TSV})."
+        return 0
+    fi
+    echo "==> NovOS install-time failure report (${FAILURE_TSV}):"
+    awk -F'\t' '
+        NF >= 3 {
+            key = $1 FS $2 FS $3
+            if (seen[key]++) next
+            if (!($1 in cnt)) order[++n] = $1
+            cnt[$1]++
+            items[$1] = items[$1] "  - " $2 ": " $3 "\n"
+            names[$1] = (names[$1] == "" ? $2 : names[$1] "," $2)
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                p = order[i]
+                printf "[Profile: %s] %d failure(s)\n%s", p, cnt[p], items[p]
+                if (p == "packages") {
+                    printf "  Retry: sudo novos-setup --packages %s\n", names[p]
+                } else {
+                    printf "  Retry: sudo novos-setup --install %s\n", p
+                }
+            }
+        }
+    ' "$FAILURE_TSV"
+}
+
+# Hides the system autostart entry for the current desktop user (XDG override, Hidden=true).
+hide_install_report_autostart() {
+    if [[ "$EUID" -eq 0 || -z "${HOME:-}" ]]; then
+        return 0
+    fi
+    local user_autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+    mkdir -p "$user_autostart"
+    printf '[Desktop Entry]\nType=Application\nName=NovOS Install Report\nHidden=true\n' \
+        > "${user_autostart}/novos-install-report.desktop"
+}
+
+if [[ "$REPORT_MODE" == "true" ]]; then
+    print_failure_report
+    case "$REPORT_OUTPUT" in
+        log)
+            ;;
+        notify)
+            if [[ -s "$FAILURE_TSV" ]]; then
+                if ! command -v notify-send >/dev/null 2>&1; then
+                    echo "[WARN] notify-send not found; run 'novos-setup --report' in a terminal to view the failure report." >&2
+                    exit 0
+                fi
+                fail_count="$(cut -f1,2 "$FAILURE_TSV" | sort -u | wc -l)"
+                fail_profiles="$(cut -f1 "$FAILURE_TSV" | sort -u | paste -sd, -)"
+                notify-send -u critical -a NovOS \
+                    "NovOS setup: ${fail_count} item(s) failed to install" \
+                    "Profiles: ${fail_profiles}. Run 'novos-setup --report' in a terminal for details and retry commands."
+            fi
+            hide_install_report_autostart
+            ;;
+        *)
+            hide_install_report_autostart
+            ;;
+    esac
+    exit 0
+fi
 
 if [[ "$EUID" -ne 0 ]]; then
     echo "Elevating privileges with sudo..."
@@ -583,6 +677,17 @@ verify_apt_ready() {
     fi
 }
 
+# Runtime only: appends `profile<TAB>item<TAB>reason` to the failure TSV and warns; the caller continues.
+record_install_failure() {
+    local profile="$1"
+    local item="$2"
+    local reason="$3"
+    mkdir -p "$(dirname "$FAILURE_TSV")"
+    printf '%s\t%s\t%s\n' "$profile" "$item" "$reason" >> "$FAILURE_TSV"
+    chmod 0644 "$FAILURE_TSV"
+    echo "[WARN] [Profile: ${profile}] '${item}': ${reason}; recorded in ${FAILURE_TSV} (NOVOS_CONTEXT=${NOVOS_CONTEXT:-runtime})." >&2
+}
+
 safe_apt_install() {
     verify_apt_ready
     local available_pkgs=()
@@ -595,7 +700,7 @@ safe_apt_install() {
         elif [[ "${NOVOS_CONTEXT:-}" == "build" ]]; then
             missing_pkgs+=("$pkg")
         else
-            echo "[WARN] Optional/requested package '${pkg}' not found in APT cache; skipping (NOVOS_CONTEXT=${NOVOS_CONTEXT:-runtime})." >&2
+            record_install_failure "$CURRENT_PROFILE" "$pkg" "not found in APT cache"
         fi
     done
 
@@ -606,10 +711,37 @@ safe_apt_install() {
         exit 1
     fi
 
-    if [[ "${#available_pkgs[@]}" -gt 0 ]]; then
-        DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y "${available_pkgs[@]}"
-    else
+    if [[ "${#available_pkgs[@]}" -eq 0 ]]; then
         echo "[WARN] No installable packages matched in current batch." >&2
+        return 0
+    fi
+
+    local apt_install=(apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y)
+    # Image build: an apt failure stays fatal (set -e).
+    if [[ "${NOVOS_CONTEXT:-}" == "build" ]]; then
+        DEBIAN_FRONTEND=noninteractive "${apt_install[@]}" "${available_pkgs[@]}"
+        return 0
+    fi
+    # Runtime: on a batch failure retry each package alone and record the ones that still fail.
+    if ! DEBIAN_FRONTEND=noninteractive "${apt_install[@]}" "${available_pkgs[@]}"; then
+        echo "[WARN] [Profile: ${CURRENT_PROFILE}] apt batch install failed; retrying ${#available_pkgs[@]} package(s) individually..." >&2
+        for pkg in "${available_pkgs[@]}"; do
+            if ! DEBIAN_FRONTEND=noninteractive "${apt_install[@]}" "$pkg"; then
+                record_install_failure "$CURRENT_PROFILE" "$pkg" "apt-get install failed"
+            fi
+        done
+    fi
+}
+
+# Usage: safe_flatpak_install <profile> <app-id>...
+# A failed Flathub install is fatal in every context (user decision, STEP 9D; reaffirmed for 9F):
+# it is not recorded-and-skipped like apt packages and custom tools.
+safe_flatpak_install() {
+    local profile="$1"
+    shift
+    if ! flatpak install -y flathub "$@"; then
+        echo "[FATAL] [Profile: ${profile}] flatpak install -y flathub $* failed." >&2
+        exit 1
     fi
 }
 
@@ -633,11 +765,13 @@ safe_apt_purge() {
 # Usage: load_manifest_pkgs <profile> <source>...   (fills the global MANIFEST_PKGS array)
 # --with-arch keeps foreign-arch entries qualified (wine32:i386, libwine:i386).
 # A failed lookup or an empty source list is fatal: a profile never installs a silently shortened list.
+# Also sets CURRENT_PROFILE, the profile that following safe_apt_install failures are recorded under.
 load_manifest_pkgs() {
     local profile="$1"
     shift
     local src out
     local batch=()
+    CURRENT_PROFILE="$profile"
     MANIFEST_PKGS=()
     for src in "$@"; do
         if ! out="$(novos-custom-tools packages list /etc/novos/packages.yaml --profile "$profile" --source "$src" --with-arch)"; then
@@ -804,7 +938,7 @@ configure_gaming_flathub() {
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
         load_manifest_pkgs gaming flatpak
-        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
+        safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
 
         if [[ -d "/mnt/raid0" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
             sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.valvesoftware.Steam || true
@@ -1028,7 +1162,7 @@ configure_comms_flathub() {
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
         load_manifest_pkgs comms flatpak
-        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
+        safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
     fi
 }
 
@@ -1043,7 +1177,7 @@ configure_utilities_flathub() {
     if command -v flatpak >/dev/null 2>&1; then
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
         load_manifest_pkgs utilities flatpak
-        flatpak install -y flathub "${MANIFEST_PKGS[@]}"
+        safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
     fi
 }
 
@@ -1120,6 +1254,7 @@ install_manifest_custom_tools() {
         if [[ "$POST_CALAMARES" == "true" ]]; then
             if ! /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"; then
                 echo "[WARN] [Profile: ${profile}] custom tool '${name}' failed to install; retry with: sudo novos-setup --install ${profile}" >&2
+                record_install_failure "$profile" "$name" "custom-tool install failed"
                 continue
             fi
         else
@@ -1260,6 +1395,23 @@ run_post_calamares() {
         configure_utilities_flathub
         verify_profile_deps utilities
     fi
+
+    # Surface recorded failures: login autostart for the desktop user; the Calamares log copy is
+    # printed by the next shellprocess-novos.conf command (novos-setup --report --log-only).
+    if [[ -s "$FAILURE_TSV" ]]; then
+        mkdir -p "$(dirname "$INSTALL_REPORT_DESKTOP")"
+        cat << 'REPORT_DESKTOP_EOF' > "$INSTALL_REPORT_DESKTOP"
+[Desktop Entry]
+Type=Application
+Name=NovOS Install Report
+Comment=Lists packages that failed to install during NovOS setup
+Exec=/usr/local/bin/novos-setup --report --notify
+Terminal=false
+NoDisplay=true
+REPORT_DESKTOP_EOF
+        chmod 0644 "$INSTALL_REPORT_DESKTOP"
+        echo "[WARN] [Post-Calamares] Install-time failures recorded in ${FAILURE_TSV}; login autostart ${INSTALL_REPORT_DESKTOP} written." >&2
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1268,6 +1420,7 @@ run_post_calamares() {
 if [[ -n "$SELECTED_PACKAGES" ]]; then
     echo "==> [Packages] Installing granular APT packages: ${SELECTED_PACKAGES}..."
     IFS=', ' read -ra GRANULAR_PKGS <<< "$SELECTED_PACKAGES"
+    CURRENT_PROFILE="packages"
     safe_apt_install "${GRANULAR_PKGS[@]}"
 fi
 
