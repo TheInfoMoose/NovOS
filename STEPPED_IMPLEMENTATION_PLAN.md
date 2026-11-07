@@ -125,7 +125,7 @@
 | **STEP 9G** | **COMPLETED** | `/goal` | Tailscale from its official signed apt repo; drop `curl \| sh` | `scripts/stages/03-core-system.sh`, `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9H** | **COMPLETED** | `/boost` | `tarball` custom-tool type (pinned sha256) + zig entry | `crates/novos-custom-tools/src/main.rs`, `custom-tools/manifest.yaml` |
 | **STEP 9I** | **COMPLETED** | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
-| **STEP 9J** | PLANNED | `/goal` | Dev profile installs `custom-tool` entries (zig) **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9J** | **COMPLETED** | `/goal` | Dev profile installs `custom-tool` entries (zig) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |

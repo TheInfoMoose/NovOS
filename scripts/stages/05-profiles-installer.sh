@@ -685,7 +685,7 @@ verify_profile_deps() {
             bins=(gamemoded gamescope mangohud lutris wine retroarch flatpak)
             ;;
         dev)
-            bins=(docker podman distrobox python3 clang cmake ninja ghc cabal)
+            bins=(docker podman distrobox python3 clang cmake ninja ghc cabal zig)
             services=(docker)
             ;;
         devsecops)
@@ -1108,10 +1108,27 @@ install_gaming_profile() {
     verify_profile_deps gaming
 }
 
+# Installs a profile's `source: custom-tool` manifest entries (e.g. zig) through novos-custom-tools --tool.
+# Each entry is a pinned online download, so a failure is fatal; post-Calamares (offline) skips them.
+install_manifest_custom_tools() {
+    local profile="$1"
+    local name
+    if [[ "$POST_CALAMARES" == "true" ]]; then
+        echo "==> [Profile: ${profile}] Post-Calamares offline mode: skipping online custom-tool downloads."
+        return 0
+    fi
+    load_manifest_pkgs "$profile" custom-tool
+    for name in "${MANIFEST_PKGS[@]}"; do
+        echo "==> [Profile: ${profile}] Installing custom tool '${name}' via novos-custom-tools --tool..."
+        /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"
+    done
+}
+
 install_dev_profile() {
     echo "==> [Profile: Dev] Installing Antigravity, Editors, Docker/Podman/Distrobox, KVM & Polyglot Toolchains..."
     load_manifest_pkgs dev apt
     safe_apt_install "${MANIFEST_PKGS[@]}"
+    install_manifest_custom_tools dev
     configure_dev_runtime
     verify_profile_deps dev
 }
