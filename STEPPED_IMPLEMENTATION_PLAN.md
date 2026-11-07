@@ -127,7 +127,8 @@
 | **STEP 9I** | **COMPLETED** | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
 | **STEP 9J** | **COMPLETED** | `/goal` | Dev profile installs `custom-tool` entries (zig) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9K** | **COMPLETED** | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online | `scripts/stages/05-profiles-installer.sh` |
-| **STEP 9L** | **COMPLETED** | `/goal` | Atomic binary install (temp + rename) so self-install never hits ETXTBSY **[USER BUILD]** | `crates/novos-custom-tools/src/main.rs` |
+| **STEP 9L** | **COMPLETED** | `/goal` | Atomic binary install (temp + rename) so self-install never hits ETXTBSY | `crates/novos-custom-tools/src/main.rs` |
+| **STEP 9M** | PLANNED | `/goal` | Tarball installs owned by root (`tar --no-same-owner`) **[USER BUILD]** | `crates/novos-custom-tools/src/main.rs` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
@@ -995,6 +996,41 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.4 must pass) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars` with a Calamares install that selects the dev group (`zig version` must work); logs to logs/.
+```
+
+---
+
+### STEP 9M: Tarball Installs Owned by Root
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9M: Extract `tarball` tools with tar --no-same-owner so installed files are owned by the installing user (root), not the uid recorded in the archive
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/novos-custom-tools/src/main.rs
+READ_ONLY_REFS:
+  - custom-tools/manifest.yaml (zig tarball entry, install_dir /opt/zig)
+  - VM install after adeeebc (2026-11-07): `zig version` 0.17.1 works, but `/opt/zig/zig` is owned by 1000:1000 (the first user account), because tar run as root keeps the archive's recorded owner. A normal user could replace a compiler that root runs from PATH.
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No new crate dependencies. Do not change the github_release tar.gz path (it extracts to a temp dir and installs through install_binary_mode_755, which already creates root-owned files).
+
+[PRE_GATE]
+grep -q '^fn install_tarball' crates/novos-custom-tools/src/main.rs && ! grep -n -- '--no-same-owner' crates/novos-custom-tools/src/main.rs
+
+[MUTATION_SPEC]
+1. Add `fn tarball_extract_args(archive: &Path, install_dir: &str) -> Vec<String>` returning `-xf <archive> --strip-components=1 --no-same-owner -C <install_dir>`. install_tarball builds its `tar` command from it; behavior is otherwise unchanged (sha256 still verified before extraction).
+2. Update the tarball dry-run plan step text to show `--no-same-owner`.
+3. Tests (no network): `tarball_extract_args` contains `--no-same-owner` and `--strip-components=1` in that order before `-C`; the tarball dry-run plan step mentions `--no-same-owner`. Keep all existing tests passing.
+4. Systems already installed keep their 1000:1000-owned `/opt/zig` until zig is reinstalled; do not add migration code here. Note it in the report.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -A12 '^fn tarball_extract_args' crates/novos-custom-tools/src/main.rs | grep -q -- '--no-same-owner' && cargo run -q -p novos-custom-tools -- --manifest custom-tools/manifest.yaml --tool zig --dry-run | grep -q -- '--no-same-owner'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars`, install with the dev group, boot the installed disk (Esc → Boot Manager → VirtIO disk), then `ls -ln /opt/zig/zig` must show uid 0 gid 0; logs to logs/.
 ```
 
 ---
