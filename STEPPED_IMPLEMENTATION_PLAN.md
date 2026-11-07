@@ -101,6 +101,8 @@
   - A failure with several changed components is isolated by automatic bisection (fresh rebuilds with halves held at golden), so only the culprit (component, version) is held.
   - Home: the `neb release` contract first (13A amended, built in 13B). NovOS-side: 12B (amended), 15A–15D. Until 13C lands, a kernel ABI rename still trips the Python variance lock; unblock it with the user-only `bless-golden`.
 * **Before 15B:** install-e2e cannot drive the Calamares UI; it reproduces Calamares's partition/mount/netinstall/shellprocess configuration from `calamares/modules/*`. Confirm that is an acceptable VM gate, with the manual Calamares install kept as an occasional spot check.
+* **Decided 2026-11-07 (install-time packages):** the 15A build cache covers only what the build installs into the ISO. Packages installed at install time (netinstall groups, post-calamares) are never pulled in at build time, so a previously broken version is not frozen into the image or cache. They get their own verification in install-e2e (STEP 15E).
+* **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
 
 ---
@@ -153,10 +155,11 @@
 | **STEP 13C** | PLANNED (blocked on 13B) | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` |
 | **STEP 13D** | PLANNED (user-approved delete) | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) |
 | **STEP 14A** | PLANNED | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` |
-| **STEP 15A** | PLANNED | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
+| **STEP 15A** | **COMPLETED** | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
 | **STEP 15B** | PLANNED | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
 | **STEP 15C** | PLANNED | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
-| **STEP 15D** | PLANNED (blocked on 13B, 12B) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
+| **STEP 15E** | PLANNED | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
+| **STEP 15D** | PLANNED (blocked on 13B, 12B, 15E) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
 
 ---
 
@@ -1672,7 +1675,7 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 ## Phase G8: Candidate Promotion (Decided 2026-11-07)
 
-Order: 15B → 15C (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B and 15C.
+Order: 15B → 15C → 15E (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B, 15C and 15E.
 
 ### STEP 15A: Third-Party Artifact Cache
 
@@ -1705,7 +1708,7 @@ grep -q 'apt-get clean' scripts/stages/06-snapshot-finalize.sh && ! grep -n 'art
 bash -n scripts/stages/06-snapshot-finalize.sh && bash -n scripts/build-novos.sh && grep -q 'ARTIFACT_CACHE_DIR' scripts/build-novos.sh && grep -q 'apt-get download' scripts/stages/06-snapshot-finalize.sh && grep -q 'index.toml' scripts/stages/06-snapshot-finalize.sh && ! git diff -U0 scripts/stages/06-snapshot-finalize.sh scripts/build-novos.sh | grep -E '^\+' | grep '|| true'
 
 [HALT_INVARIANT]
-Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh build; `build/artifact-cache/index.toml` must list the XanMod 7.3.3 image/headers and the tailscale .deb.
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh build; `build/artifact-cache/index.toml` must list the third-party packages installed in the ISO image (XanMod 7.3.3 image/headers, COSMIC). Build-time only: install-time packages (netinstall groups, e.g. tailscale, docker, code) are never fetched at build time; STEP 15E verifies them (amended 2026-11-07; verified by the 2026-11-07 build: 5 entries incl. XanMod 7.3.3 image/headers).
 ```
 
 ---
@@ -1773,6 +1776,42 @@ python3 -m py_compile scripts/test-docker-qemu.py && grep -q 'M6_INSTALLED_CHECK
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 15E: install-e2e Verifies Install-Time Third-Party Packages
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15E: install-e2e verifies every third-party package installed at install time and records its exact version and origin, so a failure names (component, version)
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/test-docker-qemu.py
+READ_ONLY_REFS:
+  - config/packages.yaml, calamares/modules/netinstall.yaml, calamares/modules/shellprocess-novos.conf
+  - scripts/stages/06-snapshot-finalize.sh (15A origin rule: installed version served by no Debian mirror)
+  - Open Questions: "Decided 2026-11-07 (install-time packages)", "Before 15D"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Nothing is downloaded or cached at build time; no change to the build or the 15A cache.
+
+[PRE_GATE]
+grep -q 'M6_INSTALLED_CHECKS' scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. New milestone M7_INSTALL_TIME_COMPONENTS over SSH on the booted installed disk, after M6: list installed packages (`dpkg-query -W`) that the ISO did not contain (diff against the live rootfs package list captured during the run), and for each, its installed version and apt origin (`apt-cache policy`, the `***` source; same Debian-mirror rule as 15A).
+2. Every third-party install-time package of the selected groups must be installed with a non-Debian origin from its configured repo (e.g. tailscale from pkgs.tailscale.com); a missing package or unexpected origin fails the tier, naming group, package, version and origin.
+3. Write `install-components.tsv` (package, version, arch, origin, group) to the tier's artifact directory, so a failed run is attributable to exact (component, version) pairs.
+4. Keep M6 and existing exit codes unchanged.
+
+[POST_GATE]
+python3 -m py_compile scripts/test-docker-qemu.py && grep -q 'M7_INSTALL_TIME_COMPONENTS' scripts/test-docker-qemu.py && grep -q 'install-components.tsv' scripts/test-docker-qemu.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER VM TEST: `--tier install-e2e --groups dev,network`; `install-components.tsv` must list tailscale with its pkgs.tailscale.com origin.
 ```
 
 ---

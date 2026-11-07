@@ -153,6 +153,17 @@ rm -f "$ISO_PATH" \
       "./build/novos-calamares-target.img" 2>/dev/null || true
 rm -rf "${REPO_ROOT}/build/iso_work" "./build/iso_work" 2>/dev/null || true
 
+# Third-party .deb artifact cache: Stage 6 exports every installed non-Debian .deb into it.
+# It is never purged; it accumulates across builds so later builds can hold a component.
+export ARTIFACT_CACHE_DIR="${ARTIFACT_CACHE_DIR:-${REPO_ROOT}/build/artifact-cache}"
+if [[ "$ARTIFACT_CACHE_DIR" != /* ]]; then
+    ARTIFACT_CACHE_DIR="${REPO_ROOT}/${ARTIFACT_CACHE_DIR#./}"
+fi
+mkdir -p "${ARTIFACT_CACHE_DIR}/debs"
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+    chown "${SUDO_UID}:${SUDO_GID}" "$ARTIFACT_CACHE_DIR" "${ARTIFACT_CACHE_DIR}/debs"
+fi
+
 echo "==> Preparing directory-staged Clean-Room ISO build at ${MOUNT_ROOT} (Output ISO: ${ISO_PATH})..."
 
 # Host-agnostic chroot execution wrapper inside private namespace

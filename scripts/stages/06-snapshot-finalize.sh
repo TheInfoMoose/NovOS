@@ -442,6 +442,146 @@ cp -f "${MOUNT_ROOT}/boot/efi/kernels/vmlinuz-primary" "${ISO_WORK}/live/vmlinuz
 mv -f "${MOUNT_ROOT}/tmp/initrd-live.img" "${ISO_WORK}/live/initrd.img"
 cp -f "${MOUNT_ROOT}/boot/efi/EFI/BOOT/BOOTX64.EFI" "${ISO_WORK}/EFI/BOOT/BOOTX64.EFI"
 
+echo "==> [Stage 6.6a] Exporting installed third-party .debs to the artifact cache (${ARTIFACT_CACHE_DIR:-unset})..."
+if [[ -z "${ARTIFACT_CACHE_DIR:-}" ]]; then
+    echo "[FATAL] ARTIFACT_CACHE_DIR is not set; Stage 6 must be run by scripts/build-novos.sh." >&2
+    exit 1
+fi
+ARTIFACT_INDEX="${ARTIFACT_CACHE_DIR}/index.toml"
+ARTIFACT_BUILD_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ARTIFACT_TMP="$(mktemp -d)"
+ARTIFACT_DL_DIR="/tmp/novos-artifact-dl"
+mkdir -p "${ARTIFACT_CACHE_DIR}/debs"
+rm -rf "${MOUNT_ROOT}${ARTIFACT_DL_DIR}"
+mkdir -p "${MOUNT_ROOT}${ARTIFACT_DL_DIR}"
+
+chroot "${MOUNT_ROOT}" /usr/bin/env -i LC_ALL=C PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+    dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Package}\t${Version}\t${Architecture}\n' \
+    > "${ARTIFACT_TMP}/dpkg-all.tsv"
+# apt-cache policy prints native-arch packages without the ":<arch>" suffix that ${binary:Package}
+# carries for Multi-Arch: same packages, so strip it to key both sides identically. Held (hi) counts as installed.
+ARTIFACT_NATIVE_ARCH="$(chroot "${MOUNT_ROOT}" dpkg --print-architecture)"
+awk -F'\t' -v OFS='\t' -v native=":${ARTIFACT_NATIVE_ARCH}" '
+    $1 == "ii " || $1 == "hi " {
+        n = length(native)
+        if (length($2) > n && substr($2, length($2) - n + 1) == native) { $2 = substr($2, 1, length($2) - n) }
+        print
+    }
+' "${ARTIFACT_TMP}/dpkg-all.tsv" > "${ARTIFACT_TMP}/installed.tsv"
+mapfile -t ARTIFACT_PKGS < <(cut -f2 "${ARTIFACT_TMP}/installed.tsv")
+if [[ "${#ARTIFACT_PKGS[@]}" -eq 0 ]]; then
+    echo "[FATAL] dpkg-query reported no installed packages in ${MOUNT_ROOT}." >&2
+    exit 1
+fi
+
+chroot "${MOUNT_ROOT}" /usr/bin/env -i LC_ALL=C PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+    apt-cache policy "${ARTIFACT_PKGS[@]}" > "${ARTIFACT_TMP}/policy.txt"
+
+# Third-party = the installed (***) version is served by no Debian mirror. A *** version known only
+# from /var/lib/dpkg/status counts as third-party when another version of it comes from a third-party repo.
+awk -v mirror="${DEBIAN_MIRROR}" '
+    function is_debian(u) { return (index(u, mirror) == 1 || u ~ /^https?:\/\/([^\/]+\.)?debian\.org(\/|$)/) }
+    function flush() {
+        if (pkg == "") { return }
+        if (star_tp != "" && !star_deb) { print pkg "\t" star_tp }
+        else if (!star_deb && star_status && other_tp != "") { print pkg "\t" other_tp }
+    }
+    /^[^ ].*:$/ { flush(); pkg = substr($0, 1, length($0) - 1); star_tp = ""; star_deb = 0; star_status = 0; other_tp = ""; cur = ""; next }
+    /^ \*\*\* / { cur = "star"; next }
+    /^     [^ ]/ { cur = "other"; next }
+    /^        [^ ]/ {
+        u = $2
+        if (u == "/var/lib/dpkg/status") { if (cur == "star") { star_status = 1 }; next }
+        if (is_debian(u)) { if (cur == "star") { star_deb = 1 }; next }
+        src = u " " $3
+        if (cur == "star" && star_tp == "") { star_tp = src }
+        else if (cur == "other" && other_tp == "") { other_tp = src }
+        next
+    }
+    END { flush() }
+' "${ARTIFACT_TMP}/policy.txt" > "${ARTIFACT_TMP}/third-party.tsv"
+
+declare -A ARTIFACT_SOURCE=()
+while IFS=$'\t' read -r tp_pkg tp_src; do
+    ARTIFACT_SOURCE["$tp_pkg"]="$tp_src"
+done < "${ARTIFACT_TMP}/third-party.tsv"
+if [[ "${#ARTIFACT_SOURCE[@]}" -eq 0 ]]; then
+    echo "[FATAL] No third-party packages detected (XanMod and COSMIC are always installed); origin detection is broken." >&2
+    exit 1
+fi
+
+if [[ ! -f "$ARTIFACT_INDEX" ]]; then
+    echo "# NovOS third-party artifact cache index (appended by Stage 6; entries are never rewritten)" > "$ARTIFACT_INDEX"
+fi
+
+index_sha_for_file() {
+    awk -v f="\"$1\"" '
+        $1 == "file" && $3 == f { found = 1; next }
+        found && $1 == "sha256" { gsub(/"/, "", $3); print $3; exit }
+    ' "$ARTIFACT_INDEX"
+}
+
+ARTIFACT_NEW=0
+ARTIFACT_KEPT=0
+while IFS=$'\t' read -r _st bpkg name ver arch; do
+    if [[ -n "${ARTIFACT_SOURCE[$bpkg]:-}" ]]; then
+        deb_file="${name}_${ver//:/%3a}_${arch}.deb"
+        src_deb="${MOUNT_ROOT}/var/cache/apt/archives/${deb_file}"
+        if [[ ! -f "$src_deb" ]]; then
+            if ! chroot "${MOUNT_ROOT}" /usr/bin/env -i LC_ALL=C HOME=/root PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+                    /bin/bash -euo pipefail -c 'cd "$1" && apt-get -o APT::Sandbox::User=root download "$2"' \
+                    _ "$ARTIFACT_DL_DIR" "${bpkg}=${ver}"; then
+                echo "[FATAL] Third-party package ${bpkg} ${ver} is not in the APT cache and cannot be downloaded." >&2
+                exit 1
+            fi
+            src_deb="${MOUNT_ROOT}${ARTIFACT_DL_DIR}/${deb_file}"
+            if [[ ! -f "$src_deb" ]]; then
+                echo "[FATAL] apt-get download of ${bpkg}=${ver} did not produce ${deb_file}." >&2
+                exit 1
+            fi
+        fi
+        deb_sha="$(sha256sum "$src_deb" | awk '{print $1}')"
+        dest_deb="${ARTIFACT_CACHE_DIR}/debs/${deb_file}"
+        if [[ -f "$dest_deb" ]]; then
+            dest_sha="$(sha256sum "$dest_deb" | awk '{print $1}')"
+            if [[ "$dest_sha" != "$deb_sha" ]]; then
+                echo "[FATAL] ${deb_file}: cached sha256 ${dest_sha} differs from this build's ${deb_sha} (same name+version)." >&2
+                exit 1
+            fi
+        else
+            cp -f "$src_deb" "${dest_deb}.tmp"
+            mv -f "${dest_deb}.tmp" "$dest_deb"
+        fi
+        idx_sha="$(index_sha_for_file "debs/${deb_file}")"
+        if [[ -n "$idx_sha" ]]; then
+            if [[ "$idx_sha" != "$deb_sha" ]]; then
+                echo "[FATAL] ${deb_file}: index.toml sha256 ${idx_sha} differs from this build's ${deb_sha} (same name+version)." >&2
+                exit 1
+            fi
+            ARTIFACT_KEPT=$((ARTIFACT_KEPT + 1))
+        else
+            cat << EOF >> "$ARTIFACT_INDEX"
+
+[[deb]]
+package = "${name}"
+version = "${ver}"
+arch = "${arch}"
+file = "debs/${deb_file}"
+sha256 = "${deb_sha}"
+source = "${ARTIFACT_SOURCE[$bpkg]}"
+iso_build_utc = "${ARTIFACT_BUILD_UTC}"
+EOF
+            ARTIFACT_NEW=$((ARTIFACT_NEW + 1))
+        fi
+    fi
+done < "${ARTIFACT_TMP}/installed.tsv"
+
+rm -rf "${MOUNT_ROOT}${ARTIFACT_DL_DIR}" "$ARTIFACT_TMP"
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+    chown -R "${SUDO_UID}:${SUDO_GID}" "$ARTIFACT_CACHE_DIR"
+fi
+echo "[OK]   Artifact cache: ${#ARTIFACT_SOURCE[@]} third-party package(s); ${ARTIFACT_NEW} new, ${ARTIFACT_KEPT} already cached (${ARTIFACT_INDEX})"
+
 echo "==> [Stage 6.6] Cleaning APT Caches & Packing Staged Rootfs into SquashFS (${ISO_WORK}/live/filesystem.squashfs)..."
 chroot "${MOUNT_ROOT}" apt-get clean 2>/dev/null || true
 rm -rf "${MOUNT_ROOT}/var/lib/apt/lists/"* \
