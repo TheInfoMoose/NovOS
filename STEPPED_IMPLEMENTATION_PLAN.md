@@ -126,7 +126,8 @@
 | **STEP 9H** | **COMPLETED** | `/boost` | `tarball` custom-tool type (pinned sha256) + zig entry | `crates/novos-custom-tools/src/main.rs`, `custom-tools/manifest.yaml` |
 | **STEP 9I** | **COMPLETED** | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
 | **STEP 9J** | **COMPLETED** | `/goal` | Dev profile installs `custom-tool` entries (zig) | `scripts/stages/05-profiles-installer.sh` |
-| **STEP 9K** | **COMPLETED** | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9K** | **COMPLETED** | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online | `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9L** | PLANNED | `/goal` | Atomic binary install (temp + rename) so self-install never hits ETXTBSY **[USER BUILD]** | `crates/novos-custom-tools/src/main.rs` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
@@ -959,6 +960,41 @@ bash -n scripts/stages/05-profiles-installer.sh && test "$(grep -c 'install_mani
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.1d must pass) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars` with a Calamares install that selects the dev group (`zig version` must work); logs to logs/.
+```
+
+---
+
+### STEP 9L: Atomic Binary Install in novos-custom-tools
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9L: Make install_binary_mode_755 replace the target atomically (temp file + rename) so installing over a running binary works
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/novos-custom-tools/src/main.rs
+READ_ONLY_REFS:
+  - scripts/stages/05-profiles-installer.sh (Stage 5.4 runs /usr/local/bin/novos-custom-tools --install-enabled)
+  - custom-tools/manifest.yaml (enabled `local` entry novos-custom-tools, install_target /usr/local/bin/novos-custom-tools)
+  - Build after 1d10dae: Stage 5.4 failed with "Failed copying /root/novos-build/target/release/novos-custom-tools to /usr/local/bin/novos-custom-tools: Text file busy (os error 26)". The copy path is unchanged since 7b603d5; earlier builds stopped before 5.4.
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No new crate dependencies. Do not skip or disable the self-install entry.
+
+[PRE_GATE]
+grep -q '^fn install_binary_mode_755' crates/novos-custom-tools/src/main.rs && grep -A6 '^fn install_binary_mode_755' crates/novos-custom-tools/src/main.rs | grep -q 'fs::copy(src, dst)'
+
+[MUTATION_SPEC]
+1. install_binary_mode_755(src, dst): create dst's parent; copy src to a temp file in the same directory (`.<file name>.novos-tmp.<pid>`); set mode 0755 on the temp file; `fs::rename(temp, dst)`. rename(2) swaps the directory entry, so a running dst keeps executing its old inode and no ETXTBSY occurs. On any error remove the temp file and return an error that names src, dst and the failing operation. Same-directory temp keeps rename on one filesystem.
+2. Leave all six callers unchanged (local, github_release raw/AppImage/tar, github_source); they all go through this function.
+3. Tests (no network, temp dirs only): installs into a fresh path with mode 0755; replaces an existing file; replaces a file that is currently being executed (spawn a copy of a short-lived binary such as `/bin/sleep`-equivalent copied into the temp dir, start it, install over it, assert success, then kill/wait the child); leaves no `.novos-tmp.` file behind on success or on a failing copy (missing src). Keep all existing tests passing.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -A20 '^fn install_binary_mode_755' crates/novos-custom-tools/src/main.rs | grep -q 'fs::rename' && ! grep -A20 '^fn install_binary_mode_755' crates/novos-custom-tools/src/main.rs | grep -q 'fs::copy(src, dst)'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.4 must pass) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars` with a Calamares install that selects the dev group (`zig version` must work); logs to logs/.
 ```
 
 ---
