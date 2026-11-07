@@ -14,10 +14,12 @@ across two tiers:
       4. Capture final QMP `screendump` to `logs/qemu-artifacts/live-boot-final.ppm`.
   - Tier 2 (`install-e2e`):
       1. Complete all `live-boot` checks.
-      2. Trigger unattended/headless Calamares or partition/unpack/limine-bootloader
-         verification against `/dev/vda`, verifying 6 GiB `NOVOS_EFI` (`vda1`) +
-         `NOVOS_ROOT` Btrfs subvolumes (`@`, `@home`, `@snapshots`, `@srv_llm`, etc.) +
-         `/boot/efi/limine.conf` + `/boot/efi/EFI/BOOT/BOOTX64.EFI`.
+      2. Reproduce the Calamares exec sequence from `calamares/` against `/dev/vda`, one
+         milestone per sub-step: partition (partition.conf ESP + the 10 mount.conf Btrfs
+         subvolumes `@` ... `@devshare`), rootfs (unpackfs, machineid, fstab, users),
+         netinstall (shellprocess@prepackages + `--groups` packages, default `dev,network`),
+         shellprocess (every shellprocess-novos.conf command, `@@username@@` = test user),
+         bootloader (the limine-bootloader module, then umount).
       3. Reboot VM from `/dev/vda` (without CD-ROM boot override) and verify
          installed system boots cleanly.
 
@@ -29,11 +31,13 @@ plus `logs/qemu-artifacts/last-test-verdict.json`.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -66,6 +70,42 @@ ARTIFACTS_DIR = REPO_ROOT / "logs" / "qemu-artifacts"
 DEFAULT_TIMEOUT_BY_TIER = {
     "live-boot": 420,
     "install-e2e": 1200,
+}
+
+# install-e2e reproduces the Calamares exec sequence from these configs (STEP 15B).
+CALAMARES_DIR = REPO_ROOT / "calamares"
+PACKAGES_MANIFEST_PATH = REPO_ROOT / "config" / "packages.yaml"
+DEFAULT_INSTALL_GROUPS = "dev,network"
+INSTALL_E2E_DISK = "/dev/vda"
+INSTALL_E2E_TARGET = "/mnt/novos-install"
+INSTALL_E2E_TEST_USER = "novostest"
+INSTALL_E2E_LOG_EXCERPT_LINES = 40
+GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+GPT_TYPE_LINUX = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+LIMINE_MODULE_GUEST_PATHS: tuple[str, ...] = (
+    "/usr/lib/x86_64-linux-gnu/calamares/modules/limine-bootloader/main.py",
+    "/usr/lib/calamares/modules/limine-bootloader/main.py",
+)
+INSTALL_E2E_REPRODUCED_MODULES: tuple[str, ...] = (
+    "partition",
+    "mount",
+    "unpackfs",
+    "machineid",
+    "fstab",
+    "users",
+    "networkcfg",
+    "shellprocess@prepackages",
+    "packages",
+    "shellprocess@novos",
+    "limine-bootloader",
+    "umount",
+)
+INSTALL_E2E_SUBSTEP_MILESTONES: dict[str, str] = {
+    "partition": "M5_INSTALL_PARTITION",
+    "rootfs": "M5_INSTALL_ROOTFS",
+    "netinstall": "M5_INSTALL_NETINSTALL",
+    "shellprocess": "M5_INSTALL_SHELLPROCESS",
+    "bootloader": "M5_INSTALL_BOOTLOADER",
 }
 
 OVMF_SPLIT_CANDIDATES: tuple[tuple[str, str], ...] = (
@@ -544,14 +584,33 @@ def build_milestone_plan(tier: str) -> list[dict[str, str]]:
     if tier == "install-e2e":
         return live_boot_milestones + [
             {
-                "id": "M5_CALAMARES_INSTALL_VDA",
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["partition"],
                 "tier": "install-e2e",
                 "description": (
-                    "Trigger unattended/headless Calamares or partition/unpack/limine-bootloader "
-                    "verification against /dev/vda, verifying 6 GiB NOVOS_EFI (vda1) + "
-                    "NOVOS_ROOT Btrfs subvolumes (@, @home, @snapshots, @srv_llm, etc.) + "
-                    "/boot/efi/limine.conf + /boot/efi/EFI/BOOT/BOOTX64.EFI"
+                    "Calamares partition + mount on /dev/vda: ESP from partition.conf, Btrfs root with "
+                    "the mount.conf subvolumes (@, @home, @snapshots, @var_log, @var_cache, @flatpak, "
+                    "@docker, @containerd, @llm, @devshare) mounted"
                 ),
+            },
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["rootfs"],
+                "tier": "install-e2e",
+                "description": "unpackfs + extraMounts, machineid, fstab, users (test user), networkcfg",
+            },
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["netinstall"],
+                "tier": "install-e2e",
+                "description": "shellprocess@prepackages, then packages module with the --groups netinstall.yaml groups",
+            },
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["shellprocess"],
+                "tier": "install-e2e",
+                "description": "Every shellprocess-novos.conf command in the target chroot (@@username@@ = test user)",
+            },
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["bootloader"],
+                "tier": "install-e2e",
+                "description": "limine-bootloader Calamares module (ISO copy of main.py), then umount",
             },
             {
                 "id": "M6_REBOOT_INSTALLED_VDA",
@@ -904,118 +963,547 @@ def verify_live_guest_invariants(build_cfg: dict[str, str], ssh_port: int = 2222
     return False, f"Live guest invariant verification failed: {last_err}"
 
 
-def run_install_e2e_on_guest(build_cfg: dict[str, str], ssh_port: int = 2222) -> tuple[bool, str]:
+def _load_yaml_file(path: pathlib.Path) -> Any:
+    """Parse one Calamares/manifest YAML file (PyYAML, `python3-yaml`, is required for install-e2e)."""
+    try:
+        import yaml  # Imported lazily: only the install-e2e tier parses Calamares YAML.
+    except ImportError as exc:
+        raise RuntimeError(
+            "install-e2e requires PyYAML on the host (python3-yaml) to read calamares/modules/*.conf"
+        ) from exc
+    with open(path, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _parse_calamares_size_mib(size_text: Any) -> int:
+    """Convert a Calamares partition size (`6144M`, `6144MiB`, `6G`, `6GiB`) to MiB."""
+    m = re.fullmatch(r"\s*(\d+)\s*(MiB|M|GiB|G)\s*", str(size_text))
+    if not m:
+        raise ValueError(f"Unsupported Calamares partition size: {size_text!r}")
+    value = int(m.group(1))
+    return value * 1024 if m.group(2) in ("G", "GiB") else value
+
+
+def _shellprocess_commands(conf: dict[str, Any], conf_name: str) -> list[dict[str, Any]]:
+    """Return the `script` entries of a Calamares shellprocess config as {command, timeout}."""
+    if conf.get("dontChroot", False):
+        raise ValueError(f"{conf_name}: dontChroot=true is not reproduced by install-e2e")
+    default_timeout = int(conf.get("timeout", 30))
+    commands: list[dict[str, Any]] = []
+    for entry in conf.get("script") or []:
+        if isinstance(entry, str):
+            commands.append({"command": entry, "timeout": default_timeout})
+        elif isinstance(entry, dict) and isinstance(entry.get("command"), str):
+            commands.append(
+                {"command": entry["command"], "timeout": int(entry.get("timeout", default_timeout))}
+            )
+        else:
+            raise ValueError(f"{conf_name}: unsupported script entry {entry!r}")
+    if not commands:
+        raise ValueError(f"{conf_name}: no script commands")
+    return commands
+
+
+def load_calamares_install_config(calamares_dir: pathlib.Path = CALAMARES_DIR) -> dict[str, Any]:
     """
-    Execute Tier 2 (`install-e2e`) Milestone 2 against `/dev/vda` inside the live guest:
-    Partitions `/dev/vda` with a 6 GiB `NOVOS_EFI` (`vda1`) + `NOVOS_ROOT` (`vda2`),
-    creates Btrfs subvolumes (`@`, `@home`, `@snapshots`, `@srv_llm`, `@var_log`,
-    `@var_cache`, `@var_tmp`), unpacks the live squashfs rootfs, invokes the
-    Calamares `limine-bootloader` module (or installs Limine UEFI + `/boot/efi/limine.conf`),
-    and verifies all required partition labels, subvolumes, and EFI boot artifacts.
+    Read the Calamares configuration that install-e2e reproduces:
+      - settings.conf: the exec sequence (checked for the modules reproduced here, in order)
+        and the shellprocess instances (`shellprocess@novos` -> shellprocess-novos.conf).
+      - partition.conf: ESP mount point, size and name; default filesystem (btrfs).
+      - mount.conf: Btrfs subvolumes + mount points (`@` ... `@devshare`), extraMounts, mount options.
+      - unpackfs.conf, machineid.conf, fstab.conf, users.conf, packages.conf, netinstall.yaml.
+    """
+    modules_dir = calamares_dir / "modules"
+    settings = _load_yaml_file(calamares_dir / "settings.conf")
+    exec_modules: list[str] = []
+    for phase in settings.get("sequence") or []:
+        if isinstance(phase, dict) and "exec" in phase:
+            exec_modules.extend(str(mod) for mod in phase["exec"] or [])
+    position = -1
+    for mod in INSTALL_E2E_REPRODUCED_MODULES:
+        if mod not in exec_modules:
+            raise ValueError(f"calamares/settings.conf exec sequence lacks module {mod!r}")
+        idx = exec_modules.index(mod)
+        if idx < position:
+            raise ValueError(f"calamares/settings.conf exec sequence order changed at {mod!r}")
+        position = idx
+    if settings.get("dont-chroot", False):
+        raise ValueError("calamares/settings.conf: dont-chroot=true is not reproduced by install-e2e")
+    instance_conf = {
+        f"{inst['module']}@{inst['id']}": str(inst["config"])
+        for inst in settings.get("instances") or []
+        if isinstance(inst, dict) and {"id", "module", "config"} <= inst.keys()
+    }
+    prepackages_name = instance_conf["shellprocess@prepackages"]
+    shellprocess_name = instance_conf["shellprocess@novos"]
+
+    partition = _load_yaml_file(modules_dir / "partition.conf")
+    if str(partition.get("defaultFileSystemType", "")).lower() != "btrfs":
+        raise ValueError("calamares/modules/partition.conf: defaultFileSystemType is not btrfs")
+    esp = {
+        "mount_point": str(partition["efiSystemPartition"]),
+        "size_mib": _parse_calamares_size_mib(partition["efiSystemPartitionSize"]),
+        "name": str(partition["efiSystemPartitionName"]),
+    }
+
+    mount = _load_yaml_file(modules_dir / "mount.conf")
+    subvolumes = [
+        {"subvolume": str(sv["subvolume"]).lstrip("/"), "mount_point": str(sv["mountPoint"])}
+        for sv in mount.get("btrfsSubvolumes") or []
+    ]
+    if not any(sv["mount_point"] == "/" for sv in subvolumes):
+        raise ValueError("calamares/modules/mount.conf: no btrfsSubvolumes entry for /")
+    # Mount parents before children ("/" first), as Calamares mounts by mount-point depth.
+    subvolumes.sort(key=lambda sv: (sv["mount_point"] != "/", sv["mount_point"].count("/"), sv["mount_point"]))
+    mount_options = {
+        str(opt["filesystem"]): ",".join(str(o) for o in opt.get("options") or [])
+        for opt in mount.get("mountOptions") or []
+    }
+
+    unpackfs = _load_yaml_file(modules_dir / "unpackfs.conf")
+    unpack_entries = unpackfs.get("unpack") or []
+    if len(unpack_entries) != 1 or str(unpack_entries[0].get("sourcefs")) != "squashfs":
+        raise ValueError("calamares/modules/unpackfs.conf: expected exactly one squashfs unpack entry")
+
+    fstab = _load_yaml_file(modules_dir / "fstab.conf")
+    users = _load_yaml_file(modules_dir / "users.conf")
+    packages = _load_yaml_file(modules_dir / "packages.conf")
+    if str(packages.get("backend")) != "apt":
+        raise ValueError("calamares/modules/packages.conf: backend is not apt")
+    try_remove: list[str] = []
+    for op in packages.get("operations") or []:
+        if isinstance(op, dict):
+            try_remove.extend(str(p) for p in op.get("try_remove") or [])
+
+    netinstall = _load_yaml_file(modules_dir / "netinstall.yaml")
+    if not isinstance(netinstall, list):
+        raise ValueError("calamares/modules/netinstall.yaml: expected a list of groups")
+
+    return {
+        "esp": esp,
+        "subvolumes": subvolumes,
+        "btrfs_options": mount_options.get("btrfs", mount_options.get("default", "defaults")),
+        "efi_options": mount_options.get("efi", mount_options.get("default", "defaults")),
+        "extra_mounts": list(mount.get("extraMounts") or []),
+        "unpack_source": str(unpack_entries[0]["source"]),
+        "machineid": _load_yaml_file(modules_dir / "machineid.conf") or {},
+        "fstab_options": dict(fstab.get("mountOptions") or {}),
+        "fstab_ssd_options": dict(fstab.get("ssdExtraMountOptions") or {}),
+        "user_groups": [str(g) for g in users.get("defaultGroups") or []],
+        "user_shell": str(users.get("defaultShell", "/bin/bash")),
+        "packages_update_db": bool(packages.get("update_db", False)),
+        "packages_try_remove": try_remove,
+        "prepackages_conf": prepackages_name,
+        "prepackages": _shellprocess_commands(
+            _load_yaml_file(modules_dir / prepackages_name), prepackages_name
+        ),
+        "shellprocess_conf": shellprocess_name,
+        "shellprocess": _shellprocess_commands(
+            _load_yaml_file(modules_dir / shellprocess_name), shellprocess_name
+        ),
+        "netinstall": netinstall,
+    }
+
+
+def _netinstall_group_packages(group: dict[str, Any]) -> list[str]:
+    """All packages of a netinstall group and its subgroups (selecting a group selects its subgroups)."""
+    found: list[str] = []
+    for pkg in group.get("packages") or []:
+        found.append(str(pkg["name"]) if isinstance(pkg, dict) else str(pkg))
+    for sub in group.get("subgroups") or []:
+        found.extend(_netinstall_group_packages(sub))
+    return found
+
+
+def resolve_install_groups(
+    groups_spec: str,
+    netinstall_groups: list[dict[str, Any]],
+    manifest_path: pathlib.Path = PACKAGES_MANIFEST_PATH,
+) -> list[dict[str, Any]]:
+    """
+    Resolve `--groups` to netinstall.yaml groups. A token is either a group name exactly as
+    written in netinstall.yaml (names containing commas are re-joined), or the profile id
+    (`dev`, `network`, ...) whose config/packages.yaml `name` is that netinstall group name
+    (netinstall.yaml is rendered from config/packages.yaml and carries only the names).
+    """
+    by_name = {str(g["name"]): g for g in netinstall_groups if isinstance(g, dict) and "name" in g}
+    id_to_name: dict[str, str] = {}
+    if manifest_path.is_file():
+        manifest = _load_yaml_file(manifest_path) or {}
+        for g in manifest.get("groups") or []:
+            if isinstance(g, dict) and g.get("layer") == "profile" and str(g.get("name")) in by_name:
+                id_to_name[str(g["id"])] = str(g["name"])
+
+    resolved: list[dict[str, Any]] = []
+    pending = ""
+    for piece in groups_spec.split(","):
+        candidate = f"{pending}, {piece.strip()}" if pending else piece.strip()
+        if not candidate:
+            continue
+        name = candidate if candidate in by_name else id_to_name.get(candidate)
+        if name is None:
+            pending = candidate
+            continue
+        pending = ""
+        if all(r["name"] != name for r in resolved):
+            resolved.append(
+                {"token": candidate, "name": name, "packages": _netinstall_group_packages(by_name[name])}
+            )
+    if pending:
+        raise ValueError(
+            f"--groups: unknown netinstall group {pending!r}; use a netinstall.yaml group name "
+            f"or one of the profile ids {sorted(id_to_name)}"
+        )
+    if not resolved:
+        raise ValueError("--groups: no netinstall group selected")
+    return resolved
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    unique: list[str] = []
+    for item in items:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _partition_device(index: int) -> str:
+    return f"{INSTALL_E2E_DISK}{index}"
+
+
+def build_install_partition_script(install_cfg: dict[str, Any], build_cfg: dict[str, str]) -> str:
+    """partition + mount modules: GPT ESP + Btrfs root on /dev/vda, subvolumes from mount.conf."""
+    q = shlex.quote
+    esp = install_cfg["esp"]
+    root_label = build_cfg.get("ROOT_LABEL", "NOVOS_ROOT")
+    esp_dev, root_dev, tgt = _partition_device(1), _partition_device(2), INSTALL_E2E_TARGET
+    lines = [
+        "set -euo pipefail",
+        f"wipefs -af {INSTALL_E2E_DISK}",
+        f"sfdisk {INSTALL_E2E_DISK} <<'EOF'",
+        "label: gpt",
+        f'size={esp["size_mib"]}MiB, type={GPT_TYPE_ESP}, name="{esp["name"]}"',
+        f'type={GPT_TYPE_LINUX}, name="{root_label}"',
+        "EOF",
+        "udevadm settle",
+        f"for _ in $(seq 1 50); do [ -b {esp_dev} ] && [ -b {root_dev} ] && break; sleep 0.2; done",
+        f"test -b {esp_dev}",
+        f"test -b {root_dev}",
+        f"mkfs.vfat -F 32 -n {q(esp['name'])} {esp_dev}",
+        f"mkfs.btrfs -f -L {q(root_label)} {root_dev}",
+        f"mkdir -p {tgt}",
+        f"mount {root_dev} {tgt}",
+    ]
+    for sv in install_cfg["subvolumes"]:
+        lines.append(f"btrfs subvolume create {q(tgt + '/' + sv['subvolume'])}")
+    lines.append(f"umount {tgt}")
+    for sv in install_cfg["subvolumes"]:
+        mp = tgt + ("" if sv["mount_point"] == "/" else sv["mount_point"])
+        opts = f"{install_cfg['btrfs_options']},subvol=/{sv['subvolume']}"
+        lines.append(f"mkdir -p {q(mp)}")
+        lines.append(f"mount -t btrfs -o {q(opts)} {root_dev} {q(mp)}")
+    esp_mp = tgt + esp["mount_point"]
+    lines += [
+        f"mkdir -p {q(esp_mp)}",
+        f"mount -t vfat -o {q(install_cfg['efi_options'])} {esp_dev} {q(esp_mp)}",
+        "# Verify: ESP size, every subvolume exists and is mounted at its mount point",
+        f'test "$(lsblk -b -n -o SIZE {esp_dev} | head -n1)" -ge {esp["size_mib"] * 1024 * 1024}',
+        f'SUBS="$(btrfs subvolume list {tgt})"',
+    ]
+    for sv in install_cfg["subvolumes"]:
+        mp = tgt + ("" if sv["mount_point"] == "/" else sv["mount_point"])
+        lines.append(f'echo "$SUBS" | grep -qx {q(".* path " + sv["subvolume"])}')
+        lines.append(f'findmnt -n -o SOURCE {q(mp)} | grep -qF {q("[/" + sv["subvolume"] + "]")}')
+    lines.append(f"findmnt -n {q(esp_mp)}")
+    lines.append('echo "partition: ESP + ' + str(len(install_cfg["subvolumes"])) + ' Btrfs subvolumes mounted"')
+    return "\n".join(lines) + "\n"
+
+
+def build_install_rootfs_script(
+    install_cfg: dict[str, Any], build_cfg: dict[str, str], test_user: str
+) -> str:
+    """unpackfs, mount extraMounts, machineid, fstab, users and networkcfg (resolv.conf) modules."""
+    q = shlex.quote
+    tgt = INSTALL_E2E_TARGET
+    src = install_cfg["unpack_source"]
+    password = build_cfg.get("DEFAULT_ROOT_PASS", "novos")
+    lines = [
+        "set -euo pipefail",
+        f"test -f {q(src)}",
+        "SQ=/tmp/novos-e2e-squashfs",
+        'mkdir -p "$SQ"',
+        f'mount -t squashfs -o loop,ro {q(src)} "$SQ"',
+        f'cp -a "$SQ"/. {tgt}/',
+        'umount "$SQ"',
+        f"test -x {tgt}/bin/sh",
+        "# mount module extraMounts (after unpack so the copy never writes into /proc, /sys or /dev)",
+    ]
+    for em in install_cfg["extra_mounts"]:
+        mp = tgt + str(em["mountPoint"])
+        opts = [str(o) for o in em.get("options") or []]
+        if str(em.get("fs")) == "bind":
+            cmd = f"mount --bind {q(str(em['device']))} {q(mp)}"
+        else:
+            opt_arg = f" -o {q(','.join(opts))}" if opts else ""
+            cmd = f"mount -t {q(str(em['fs']))}{opt_arg} {q(str(em['device']))} {q(mp)}"
+        step = f"mkdir -p {q(mp)} && {cmd}"
+        if em.get("efi"):
+            lines.append(f"if [ -d /sys/firmware/efi ]; then {step}; fi")
+        else:
+            lines.append(step)
+
+    mid = install_cfg["machineid"]
+    if mid.get("systemd"):
+        lines += [f"rm -f {tgt}/etc/machine-id", f"chroot {tgt} systemd-machine-id-setup"]
+    if mid.get("dbus"):
+        lines.append(f"mkdir -p {tgt}/var/lib/dbus && rm -f {tgt}/var/lib/dbus/machine-id")
+        if mid.get("symlink"):
+            lines.append(f"ln -s /etc/machine-id {tgt}/var/lib/dbus/machine-id")
+        else:
+            lines.append(f"chroot {tgt} dbus-uuidgen --ensure")
+
+    fs_opts = install_cfg["fstab_options"]
+    btrfs_opts = str(fs_opts.get("btrfs", fs_opts.get("default", "defaults")))
+    vfat_opts = str(fs_opts.get("vfat", fs_opts.get("default", "defaults")))
+    ssd_btrfs = str(install_cfg["fstab_ssd_options"].get("btrfs", ""))
+    lines += [
+        f'ROOT_UUID="$(blkid -s UUID -o value {_partition_device(2)})"',
+        f'ESP_UUID="$(blkid -s UUID -o value {_partition_device(1)})"',
+        'test -n "$ROOT_UUID" && test -n "$ESP_UUID"',
+        f"BTRFS_FSTAB_OPTS={q(btrfs_opts)}",
+    ]
+    if ssd_btrfs:
+        dev_name = INSTALL_E2E_DISK.rsplit("/", 1)[-1]
+        lines.append(
+            f'if [ "$(cat /sys/block/{dev_name}/queue/rotational)" = "0" ]; then '
+            f'BTRFS_FSTAB_OPTS="$BTRFS_FSTAB_OPTS",{q(ssd_btrfs)}; fi'
+        )
+    lines.append(f": > {tgt}/etc/fstab")
+    for sv in install_cfg["subvolumes"]:
+        lines.append(
+            f'echo "UUID=$ROOT_UUID {sv["mount_point"]} btrfs subvol=/{sv["subvolume"]},$BTRFS_FSTAB_OPTS 0 0"'
+            f" >> {tgt}/etc/fstab"
+        )
+    lines.append(
+        f'echo "UUID=$ESP_UUID {install_cfg["esp"]["mount_point"]} vfat {vfat_opts} 0 2" >> {tgt}/etc/fstab'
+    )
+
+    for group in install_cfg["user_groups"]:
+        lines.append(
+            f"if ! chroot {tgt} getent group {q(group)} > /dev/null; then chroot {tgt} groupadd {q(group)}; fi"
+        )
+    lines += [
+        f"chroot {tgt} useradd -m -U -s {q(install_cfg['user_shell'])} "
+        f"-G {q(','.join(install_cfg['user_groups']))} {q(test_user)}",
+        # users.conf doReusePassword: root gets the user's password.
+        f"printf '%s\\n' {q(test_user + ':' + password)} {q('root:' + password)} | chroot {tgt} chpasswd",
+        "# networkcfg: give the chroot the live system's resolver when the target's does not resolve",
+        f"if [ ! -s {tgt}/etc/resolv.conf ]; then rm -f {tgt}/etc/resolv.conf; "
+        f"cp -L /etc/resolv.conf {tgt}/etc/resolv.conf; fi",
+        f"cat {tgt}/etc/fstab",
+        f'echo "rootfs: unpacked {src}, user {test_user} created"',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _chroot_shell_line(command: str) -> str:
+    """Run one Calamares shellprocess command in the target chroot, as `target_env_call(sh -c)`."""
+    return f"chroot {INSTALL_E2E_TARGET} /bin/sh -c {shlex.quote(command)}"
+
+
+def build_install_netinstall_script(install_cfg: dict[str, Any], groups: list[dict[str, Any]]) -> str:
+    """shellprocess@prepackages, then the packages module: try_remove, then the selected groups."""
+    q = shlex.quote
+    tgt = INSTALL_E2E_TARGET
+    lines = ["set -euo pipefail", "export DEBIAN_FRONTEND=noninteractive"]
+    for entry in install_cfg["prepackages"]:
+        lines.append(f"echo {q('prepackages: ' + entry['command'][:120])}")
+        lines.append(f"timeout {int(entry['timeout'])} {_chroot_shell_line(entry['command'])}")
+    if install_cfg["packages_update_db"]:
+        lines.append(f"chroot {tgt} apt-get -q update")
+    for pkg in install_cfg["packages_try_remove"]:
+        # try_remove: only packages present are removed; a failed removal of a present package fails.
+        lines.append(
+            f"if chroot {tgt} dpkg-query -W -f='${{db:Status-Status}}' {q(pkg)} 2> /dev/null | grep -qx installed; "
+            f"then chroot {tgt} apt-get --purge -q -y remove {q(pkg)}; fi"
+        )
+    packages = _dedupe([p for g in groups for p in g["packages"]])
+    lines.append(f"chroot {tgt} apt-get -q -y install " + " ".join(q(p) for p in packages))
+    lines.append(f'echo "netinstall: installed {len(packages)} packages from {len(groups)} groups"')
+    return "\n".join(lines) + "\n"
+
+
+def build_install_bootloader_script(install_cfg: dict[str, Any]) -> str:
+    """limine-bootloader module (the ISO's own main.py) under a libcalamares stand-in, then umount."""
+    q = shlex.quote
+    tgt = INSTALL_E2E_TARGET
+    esp_mp = install_cfg["esp"]["mount_point"]
+    gs = {
+        "rootMountPoint": tgt,
+        "partitions": [
+            {"device": _partition_device(1), "mountPoint": esp_mp, "fs": "fat32"},
+            {"device": _partition_device(2), "mountPoint": "/", "fs": "btrfs"},
+        ],
+    }
+    runner = "\n".join(
+        [
+            "import importlib.util, json, subprocess, sys, types",
+            f"GS = json.loads({json.dumps(json.dumps(gs))})",
+            "lc = types.ModuleType('libcalamares')",
+            "lc.globalstorage = types.SimpleNamespace(value=GS.get, contains=GS.__contains__)",
+            "def _warn(msg):",
+            "    print('[CALAMARES-WARN] ' + str(msg), file=sys.stderr, flush=True)",
+            "def _target_env_call(cmd, *args, **kwargs):",
+            "    return subprocess.call(['chroot', GS['rootMountPoint'], *cmd])",
+            "lc.utils = types.SimpleNamespace(warning=_warn, debug=_warn, target_env_call=_target_env_call)",
+            "lc.job = types.SimpleNamespace(configuration={})",
+            "sys.modules['libcalamares'] = lc",
+            "spec = importlib.util.spec_from_file_location('limine_bootloader_main', sys.argv[1])",
+            "mod = importlib.util.module_from_spec(spec)",
+            "spec.loader.exec_module(mod)",
+            "result = mod.run()",
+            "if result is not None:",
+            "    print('[CALAMARES-FAIL] ' + ': '.join(str(r) for r in result), file=sys.stderr, flush=True)",
+            "    sys.exit(1)",
+            "print('limine-bootloader: run() returned None')",
+        ]
+    )
+    candidates = " ".join(q(p) for p in LIMINE_MODULE_GUEST_PATHS)
+    lines = [
+        "set -euo pipefail",
+        'MAIN=""',
+        f'for cand in {candidates}; do if [ -f "$cand" ]; then MAIN="$cand"; break; fi; done',
+        'test -n "$MAIN"',
+        'echo "limine-bootloader: $MAIN"',
+        "cat > /tmp/novos-e2e-limine-runner.py <<'PYEOF'",
+        runner,
+        "PYEOF",
+        'python3 /tmp/novos-e2e-limine-runner.py "$MAIN"',
+        f"test -s {q(tgt + esp_mp + '/limine/limine.conf')}",
+        f"test -s {q(tgt + esp_mp + '/EFI/BOOT/BOOTX64.EFI')}",
+        "sync",
+        "# umount module",
+        f"umount -R {tgt}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _run_guest_install_substep(
+    script: str, tag: str, root_pass: str, ssh_port: int, timeout: int
+) -> tuple[bool, str]:
+    """Run one install sub-step script as root in the guest; return (passed, log excerpt)."""
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    path = f"/tmp/novos-e2e-{tag}"
+    remote = (
+        f"printf %s {encoded} | base64 -d > {path}.sh && "
+        f"{{ bash {path}.sh > {path}.log 2>&1; rc=$?; tail -n {INSTALL_E2E_LOG_EXCERPT_LINES} {path}.log; exit $rc; }}"
+    )
+    try:
+        res = run_guest_ssh(remote, user="root", password=root_pass, port=ssh_port, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"{tag}: timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"{tag}: {exc}"
+    excerpt = "\n".join(
+        (res.stdout.strip() + "\n" + res.stderr.strip()).strip().splitlines()[-INSTALL_E2E_LOG_EXCERPT_LINES:]
+    )
+    if res.returncode != 0:
+        excerpt = f"[exit {res.returncode}]\n{excerpt}"
+    return res.returncode == 0, excerpt
+
+
+def run_install_e2e_on_guest(
+    build_cfg: dict[str, str],
+    install_cfg: dict[str, Any],
+    groups: list[dict[str, Any]],
+    ssh_port: int = 2222,
+    test_user: str = INSTALL_E2E_TEST_USER,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """
+    Execute Tier 2 (`install-e2e`) against `/dev/vda` inside the live guest, reproducing the
+    Calamares exec sequence from `calamares/` (see load_calamares_install_config):
+      partition    - GPT ESP (partition.conf) + Btrfs root; the 10 mount.conf subvolumes
+                     (`@` ... `@devshare`) created and mounted.
+      rootfs       - unpackfs, mount extraMounts, machineid, fstab, users (test user), networkcfg.
+      netinstall   - shellprocess@prepackages, then packages.conf try_remove + the `--groups` packages.
+      shellprocess - every command of shellprocess-novos.conf in the target chroot,
+                     `@@username@@` replaced by the test user.
+      bootloader   - the ISO's limine-bootloader main.py, then umount.
+    Each sub-step is one milestone (passed, detail, log excerpt); the first failure stops the run.
     """
     root_pass = build_cfg.get("DEFAULT_ROOT_PASS", "novos")
-    esp_size_mib = build_cfg.get("ESP_SIZE_MIB", "6144")
-    esp_label = build_cfg.get("ESP_LABEL", "NOVOS_EFI")
-    root_label = build_cfg.get("ROOT_LABEL", "NOVOS_ROOT")
+    milestones: list[dict[str, Any]] = []
 
-    install_script = f"""set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-wipefs -af /dev/vda
-sfdisk /dev/vda <<'EOF'
-label: gpt
-size={esp_size_mib}MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="{esp_label}"
-type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="{root_label}"
-EOF
-partprobe /dev/vda || true
-udevadm settle || true
-mkfs.vfat -F 32 -n "{esp_label}" /dev/vda1
-mkfs.btrfs -f -L "{root_label}" /dev/vda2
+    def record(substep: str, passed: bool, detail: str, excerpt: str, **extra: Any) -> bool:
+        milestones.append(
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES[substep],
+                "substep": substep,
+                "passed": passed,
+                "detail": detail,
+                "log_excerpt": excerpt,
+                **extra,
+            }
+        )
+        return passed
 
-mkdir -p /mnt/novos-install
-mount /dev/vda2 /mnt/novos-install
-for sub in @ @home @snapshots @srv_llm @var_log @var_cache @var_tmp; do
-    btrfs subvolume create "/mnt/novos-install/${{sub}}"
-done
-umount /mnt/novos-install
+    ok, excerpt = _run_guest_install_substep(
+        build_install_partition_script(install_cfg, build_cfg), "partition", root_pass, ssh_port, 600
+    )
+    subvols = ", ".join(sv["subvolume"] for sv in install_cfg["subvolumes"])
+    if not record("partition", ok, f"ESP {install_cfg['esp']['size_mib']} MiB + subvolumes {subvols}", excerpt):
+        return False, milestones
 
-BTRFS_OPTS="noatime,compress=zstd:3,ssd_spread,commit=60,space_cache=v2"
-mount -o "${{BTRFS_OPTS}},subvol=@" /dev/vda2 /mnt/novos-install
-mkdir -p /mnt/novos-install/{{home,.snapshots,srv/llm,var/log,var/cache,var/tmp,boot/efi}}
-mount -o "${{BTRFS_OPTS}},subvol=@home" /dev/vda2 /mnt/novos-install/home
-mount -o "${{BTRFS_OPTS}},subvol=@snapshots" /dev/vda2 /mnt/novos-install/.snapshots
-mount -o "${{BTRFS_OPTS}},subvol=@srv_llm" /dev/vda2 /mnt/novos-install/srv/llm
-mount -o "${{BTRFS_OPTS}},subvol=@var_log" /dev/vda2 /mnt/novos-install/var/log
-mount -o "${{BTRFS_OPTS}},subvol=@var_cache" /dev/vda2 /mnt/novos-install/var/cache
-mount -o "${{BTRFS_OPTS}},subvol=@var_tmp" /dev/vda2 /mnt/novos-install/var/tmp
-mount /dev/vda1 /mnt/novos-install/boot/efi
+    ok, excerpt = _run_guest_install_substep(
+        build_install_rootfs_script(install_cfg, build_cfg, test_user), "rootfs", root_pass, ssh_port, 3600
+    )
+    if not record("rootfs", ok, f"unpacked {install_cfg['unpack_source']}; test user {test_user}", excerpt):
+        return False, milestones
 
-SQUASHFS_SRC=""
-for cand in /run/live/medium/live/filesystem.squashfs /lib/live/mount/medium/live/filesystem.squashfs; do
-    if [ -f "$cand" ]; then
-        SQUASHFS_SRC="$cand"
-        break
-    fi
-done
-if [ -n "$SQUASHFS_SRC" ]; then
-    unsquashfs -f -d /mnt/novos-install "$SQUASHFS_SRC"
-else
-    rsync -aAX --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found"} / /mnt/novos-install/
-fi
+    netinstall_timeout = sum(int(e["timeout"]) for e in install_cfg["prepackages"]) + 3600
+    ok, excerpt = _run_guest_install_substep(
+        build_install_netinstall_script(install_cfg, groups), "netinstall", root_pass, ssh_port, netinstall_timeout
+    )
+    if not record(
+        "netinstall",
+        ok,
+        f"{install_cfg['prepackages_conf']} + groups: " + "; ".join(g["name"] for g in groups),
+        excerpt,
+        groups=[{"token": g["token"], "name": g["name"]} for g in groups],
+    ):
+        return False, milestones
 
-cat > /mnt/novos-install/etc/fstab <<EOF
-LABEL={root_label} / btrfs ${{BTRFS_OPTS}},subvol=@ 0 0
-LABEL={root_label} /home btrfs ${{BTRFS_OPTS}},subvol=@home 0 0
-LABEL={root_label} /.snapshots btrfs ${{BTRFS_OPTS}},subvol=@snapshots 0 0
-LABEL={root_label} /srv/llm btrfs ${{BTRFS_OPTS}},subvol=@srv_llm 0 0
-LABEL={root_label} /var/log btrfs ${{BTRFS_OPTS}},subvol=@var_log 0 0
-LABEL={root_label} /var/cache btrfs ${{BTRFS_OPTS}},subvol=@var_cache 0 0
-LABEL={root_label} /var/tmp btrfs ${{BTRFS_OPTS}},subvol=@var_tmp 0 0
-LABEL={esp_label} /boot/efi vfat umask=0077 0 2
-EOF
+    command_results: list[dict[str, Any]] = []
+    sp_ok, sp_excerpt = True, ""
+    for idx, entry in enumerate(install_cfg["shellprocess"], start=1):
+        command = entry["command"].replace("@@username@@", test_user)
+        script = (
+            "set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n"
+            f"timeout {int(entry['timeout'])} {_chroot_shell_line(command)}\n"
+        )
+        cmd_ok, cmd_excerpt = _run_guest_install_substep(
+            script, f"shellprocess-{idx}", root_pass, ssh_port, int(entry["timeout"]) + 60
+        )
+        command_results.append({"command": command, "passed": cmd_ok})
+        sp_excerpt = f"$ {command}\n{cmd_excerpt}"
+        if not cmd_ok:
+            sp_ok = False
+            break
+    if not record(
+        "shellprocess",
+        sp_ok,
+        f"{install_cfg['shellprocess_conf']}: {sum(r['passed'] for r in command_results)}/"
+        f"{len(install_cfg['shellprocess'])} commands passed",
+        sp_excerpt,
+        commands=command_results,
+    ):
+        return False, milestones
 
-mkdir -p /mnt/novos-install/boot/efi/EFI/BOOT /mnt/novos-install/boot/efi/novos/current
-VMLINUZ="$(ls -1 /mnt/novos-install/boot/vmlinuz-* | sort -V | tail -n1)"
-INITRD="$(ls -1 /mnt/novos-install/boot/initrd.img-* | sort -V | tail -n1)"
-cp -f "$VMLINUZ" /mnt/novos-install/boot/efi/novos/current/vmlinuz
-cp -f "$INITRD" /mnt/novos-install/boot/efi/novos/current/initrd.img
-
-for efi_cand in /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI /run/live/medium/EFI/BOOT/BOOTX64.EFI; do
-    if [ -f "$efi_cand" ]; then
-        cp -f "$efi_cand" /mnt/novos-install/boot/efi/EFI/BOOT/BOOTX64.EFI
-        break
-    fi
-done
-
-cat > /mnt/novos-install/boot/efi/limine.conf <<EOF
-timeout: 3
-default_entry: 1
-
-/NovOS GNU/Linux
-    protocol: linux
-    kernel_path: boot():/novos/current/vmlinuz
-    module_path: boot():/novos/current/initrd.img
-    cmdline: root=LABEL={root_label} rootfstype=btrfs rootflags=subvol=@ rw console=tty0 console=ttyS0,115200n8
-EOF
-
-# Verify partition size, labels, Btrfs subvolumes, and Limine artifacts
-VDA1_BYTES="$(lsblk -b -n -o SIZE /dev/vda1 | head -n1)"
-test "$VDA1_BYTES" -ge 6442450944
-SUBS="$(btrfs subvolume list /mnt/novos-install)"
-for req_sub in @ @home @snapshots @srv_llm; do
-    echo "$SUBS" | grep -q "path ${{req_sub}}$"
-done
-test -f /mnt/novos-install/boot/efi/limine.conf
-test -f /mnt/novos-install/boot/efi/EFI/BOOT/BOOTX64.EFI
-sync
-umount -R /mnt/novos-install
-"""
-    try:
-        res = run_guest_ssh(install_script, user="root", password=root_pass, port=ssh_port, timeout=600)
-        if res.returncode == 0:
-            return True, "Installed to /dev/vda and verified NOVOS_EFI, NOVOS_ROOT Btrfs subvolumes, and Limine EFI artifacts"
-        return False, (res.stderr or res.stdout).strip()
-    except Exception as exc:
-        return False, str(exc)
+    ok, excerpt = _run_guest_install_substep(
+        build_install_bootloader_script(install_cfg), "bootloader", root_pass, ssh_port, 1800
+    )
+    record("bootloader", ok, "limine-bootloader module + umount", excerpt)
+    return ok, milestones
 
 
 # ==============================================================================
@@ -1130,6 +1618,17 @@ def run_harness(args: argparse.Namespace) -> int:
     tier = args.tier
     timeout_sec = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_BY_TIER[tier]
 
+    # install-e2e: read the Calamares configuration and resolve --groups before booting anything.
+    install_cfg: dict[str, Any] | None = None
+    install_groups: list[dict[str, Any]] = []
+    if tier == "install-e2e":
+        try:
+            install_cfg = load_calamares_install_config()
+            install_groups = resolve_install_groups(args.groups, install_cfg["netinstall"])
+        except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            print(f"[ERROR] install-e2e Calamares configuration: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+
     # Pre-flight Guardrails (mandatory before booting QEMU or mutating disk/OVMF state)
     if not args.dry_run:
         preflight_rc = run_preflight_guardrails(
@@ -1202,6 +1701,14 @@ def run_harness(args: argparse.Namespace) -> int:
             "qemu_command_str": " ".join(qemu_cmd),
             "milestones": milestone_plan,
         }
+        if install_cfg is not None:
+            dry_payload["install_e2e"] = {
+                "subvolumes": install_cfg["subvolumes"],
+                "esp": install_cfg["esp"],
+                "groups": [{"token": g["token"], "name": g["name"]} for g in install_groups],
+                "shellprocess_conf": install_cfg["shellprocess_conf"],
+                "test_user": INSTALL_E2E_TEST_USER,
+            }
         print(json.dumps(dry_payload, indent=2))
         return EXIT_OK
 
@@ -1280,17 +1787,15 @@ def run_harness(args: argparse.Namespace) -> int:
             raise RuntimeError(f"Live boot QMP screendump invalid: {sd_live}")
 
         # Tier 2 (`install-e2e`) Additional Milestones
-        if tier == "install-e2e":
-            inst_ok, inst_detail = run_install_e2e_on_guest(build_cfg)
-            completed_milestones.append(
-                {
-                    "id": "M5_CALAMARES_INSTALL_VDA",
-                    "passed": inst_ok,
-                    "detail": inst_detail,
-                }
-            )
+        if tier == "install-e2e" and install_cfg is not None:
+            inst_ok, inst_milestones = run_install_e2e_on_guest(build_cfg, install_cfg, install_groups)
+            completed_milestones.extend(inst_milestones)
             if not inst_ok:
-                raise RuntimeError(inst_detail)
+                failed = next(m for m in inst_milestones if not m["passed"])
+                raise RuntimeError(
+                    f"install-e2e {failed['substep']} failed ({failed['id']}): {failed['detail']}\n"
+                    f"{failed['log_excerpt']}"
+                )
 
             # Shut down live VM and boot installed system from /dev/vda without CD-ROM
             terminate_process(qemu_proc)
@@ -1505,7 +2010,41 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         plan_live = build_milestone_plan("live-boot")
         plan_e2e = build_milestone_plan("install-e2e")
         self.assertEqual(len(plan_live), 4)
-        self.assertEqual(len(plan_e2e), 6)
+        self.assertEqual(len(plan_e2e), 4 + len(INSTALL_E2E_SUBSTEP_MILESTONES) + 1)
+
+    def test_calamares_install_config_groups_and_scripts(self) -> None:
+        cfg = load_calamares_install_config()
+        self.assertEqual(
+            {sv["subvolume"] for sv in cfg["subvolumes"]},
+            {"@", "@home", "@snapshots", "@var_log", "@var_cache", "@flatpak",
+             "@docker", "@containerd", "@llm", "@devshare"},
+        )
+        self.assertEqual(cfg["subvolumes"][0], {"subvolume": "@", "mount_point": "/"})
+        self.assertEqual(cfg["esp"], {"mount_point": "/boot/efi", "size_mib": 6144, "name": "NOVOS_EFI"})
+        self.assertEqual(cfg["shellprocess_conf"], "shellprocess-novos.conf")
+        self.assertTrue(any("--post-calamares --user @@username@@" in c["command"] for c in cfg["shellprocess"]))
+
+        groups = resolve_install_groups(DEFAULT_INSTALL_GROUPS, cfg["netinstall"])
+        self.assertEqual([g["token"] for g in groups], ["dev", "network"])
+        self.assertIn("docker-ce", groups[0]["packages"])
+        self.assertIn("tailscale", groups[1]["packages"])
+        by_name = resolve_install_groups(groups[0]["name"], cfg["netinstall"])
+        self.assertEqual(by_name[0]["name"], groups[0]["name"])
+        with self.assertRaises(ValueError):
+            resolve_install_groups("no-such-group", cfg["netinstall"])
+
+        part = build_install_partition_script(cfg, {"ROOT_LABEL": "NOVOS_ROOT"})
+        self.assertIn("btrfs subvolume create /mnt/novos-install/@devshare", part)
+        self.assertIn("subvol=/@devshare", part)
+        self.assertIn('size=6144MiB', part)
+        net = build_install_netinstall_script(cfg, groups)
+        self.assertIn("novos-setup --pre-packages", net)
+        self.assertIn("tailscale", net)
+        boot = build_install_bootloader_script(cfg)
+        self.assertIn("umount -R /mnt/novos-install", boot)
+        for script in (part, build_install_rootfs_script(cfg, {}, INSTALL_E2E_TEST_USER), net, boot):
+            res = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+            self.assertEqual(res.returncode, 0, res.stderr)
 
     def test_ovmf_locator_and_qemu_command_construction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1854,6 +2393,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=64,
         help="VirtIO target disk size in GiB (default: 64)",
+    )
+    parser.add_argument(
+        "--groups",
+        default=DEFAULT_INSTALL_GROUPS,
+        help=(
+            "install-e2e: comma-separated netinstall groups to install, as netinstall.yaml group names "
+            f"or their config/packages.yaml profile ids (default: {DEFAULT_INSTALL_GROUPS})"
+        ),
     )
     parser.add_argument(
         "--skip-variance-check",
