@@ -100,8 +100,11 @@
   - Phases: fresh build, then VM `live-boot`, then VM `install-e2e`. Passing all three promotes the candidate to the golden snapshot automatically. Drops, downgrades and unlocks stay user-only.
   - A failure with several changed components is isolated by automatic bisection (fresh rebuilds with halves held at golden), so only the culprit (component, version) is held.
   - Home: the `neb release` contract first (13A amended, built in 13B). NovOS-side: 12B (amended), 15A–15D. Until 13C lands, a kernel ABI rename still trips the Python variance lock; unblock it with the user-only `bless-golden`.
-* **Before 15B:** install-e2e cannot drive the Calamares UI; it reproduces Calamares's partition/mount/netinstall/shellprocess configuration from `calamares/modules/*`. Confirm that is an acceptable VM gate, with the manual Calamares install kept as an occasional spot check.
+* **Before 15B:** install-e2e cannot drive the Calamares UI; it reproduces Calamares's partition/mount/netinstall/shellprocess configuration from `calamares/modules/*`. Confirm that is an acceptable VM gate, with the manual Calamares install kept as an occasional spot check. **Accepted by the user (2026-11-07).**
 * **Decided 2026-11-07 (install-time packages):** the 15A build cache covers only what the build installs into the ISO. Packages installed at install time (netinstall groups, post-calamares) are never pulled in at build time, so a previously broken version is not frozen into the image or cache. They get their own verification in install-e2e (STEP 15E).
+* **Decided 2026-11-07 (test overlay):** install-e2e cannot reach the live guest by SSH (no `openssh-server` in the ISO). The user rejected sshd and a serial getty on the production image. Tests boot a derived ISO, the production ISO plus a `live/zz-novos-test.squashfs` layer carrying `qemu-guest-agent` (15F); the harness talks over the agent's virtio-serial channel (15G). The production ISO, its `filesystem.squashfs` and the golden snapshot never contain test hooks. Prefetching the agent is approved: the install-time-package rule covers only packages removed from the build because they broke.
+* **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect.
+* **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
 
@@ -156,9 +159,11 @@
 | **STEP 13D** | PLANNED (user-approved delete) | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) |
 | **STEP 14A** | PLANNED | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` |
 | **STEP 15A** | **COMPLETED** | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
-| **STEP 15B** | PLANNED | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
-| **STEP 15C** | PLANNED | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
-| **STEP 15E** | PLANNED | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
+| **STEP 15B** | **COMPLETED** | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
+| **STEP 15F** | COMPLETED (user run 2026-11-07: filesystem.squashfs sha256 21a59a99… identical; VM boot pending) | `/boost` | Test-only overlay ISO: production ISO + `live/zz-novos-test.squashfs` (qemu-guest-agent), production squashfs byte-identical | `scripts/make-test-overlay-iso.py` |
+| **STEP 15G** | PLANNED (blocked on 15F) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
+| **STEP 15C** | PLANNED (blocked on 15G) | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
+| **STEP 15E** | PLANNED (blocked on 15C) | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
 | **STEP 15D** | PLANNED (blocked on 13B, 12B, 15E) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
 
 ---
@@ -1676,6 +1681,7 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 ## Phase G8: Candidate Promotion (Decided 2026-11-07)
 
 Order: 15B → 15C → 15E (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B, 15C and 15E.
+Amended 2026-11-07: the first install-e2e run after 15B timed out at M2 because the live ISO has no `openssh-server` (install-time `network` group only) and the harness logs in by SSH. Decided: the production ISO gets no test hook; tests boot a derived overlay ISO (15F) and reach the guest through the QEMU guest agent (15G). New order: 15F → 15G → 15C → 15E.
 
 ### STEP 15A: Third-Party Artifact Cache
 
@@ -1748,6 +1754,81 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 ---
 
+### STEP 15F: Test-Only Overlay ISO (qemu-guest-agent)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 15F: Derive a test ISO from the production ISO by adding one live-boot layer with qemu-guest-agent; the production ISO and its filesystem.squashfs stay byte-identical
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/make-test-overlay-iso.py
+READ_ONLY_REFS:
+  - config/build.env (DEBIAN_SUITE, DEBIAN_MIRROR)
+  - scripts/stages/06-snapshot-finalize.sh (ISO layout: /live/filesystem.squashfs, no filesystem.module; xorriso boot records)
+  - scripts/nebulous-ctl.py extract_iso_inventory (unprivileged xorriso/unsquashfs pattern)
+  - Open Questions: "Decided 2026-11-07 (test overlay)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No change to the build, the stages, the production ISO or the 15A cache. No root, no loop mounts, no `trusted=yes`, no unsigned downloads.
+
+[PRE_GATE]
+test -f scripts/stages/06-snapshot-finalize.sh && grep -q 'live/filesystem.squashfs' scripts/stages/06-snapshot-finalize.sh && ! test -e scripts/make-test-overlay-iso.py
+
+[MUTATION_SPEC]
+1. New unprivileged script `scripts/make-test-overlay-iso.py --iso <production.iso> [--out build/<name>-test.iso] [--packages qemu-guest-agent]`; reads DEBIAN_SUITE / DEBIAN_MIRROR from config/build.env. Fails (exit 1, named reason) on any error; no fallbacks.
+2. From the production ISO (xorriso -osirrox, unsquashfs into a temp dir): extract /live/filesystem.squashfs's `var/lib/dpkg/status` and `usr/share/keyrings/debian-archive-keyring.gpg`.
+3. Fetch `dists/<suite>/InRelease` from DEBIAN_MIRROR, verify it with `gpgv` against that keyring; fetch `main/binary-amd64/Packages.xz` and check its SHA256 against InRelease. Resolve the requested packages' Depends/Pre-Depends recursively, skipping anything the production dpkg status already satisfies (version constraints honored; first satisfiable alternative). Download each missing .deb and check its SHA256 against Packages.
+4. Stage the layer: `dpkg-deb -x` every downloaded .deb; copy the .debs to `/usr/share/novos-test/debs/`; write `/usr/share/novos-test/overlay.json` (package, version, arch, sha256, mirror, suite, InRelease Date). `mksquashfs <stage> zz-novos-test.squashfs -all-root -noappend -comp zstd`.
+5. Remaster with `xorriso -indev <production.iso> -outdev <out> -map zz-novos-test.squashfs /live/zz-novos-test.squashfs -boot_image any replay`. Verify: the sha256 of /live/filesystem.squashfs extracted from both ISOs is equal, and /live/zz-novos-test.squashfs is present in <out>; print both hashes and the overlay manifest.
+6. `--self-test`: unit tests for the Depends parser/resolver (alternatives, version operators, already-satisfied packages) on inline fixtures.
+
+[POST_GATE]
+python3 -m py_compile scripts/make-test-overlay-iso.py && python3 scripts/make-test-overlay-iso.py --self-test && grep -q 'gpgv' scripts/make-test-overlay-iso.py && grep -q 'boot_image any replay' scripts/make-test-overlay-iso.py && grep -q 'overlay.json' scripts/make-test-overlay-iso.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER RUN (non-root): `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso`; the printed filesystem.squashfs hashes must match.
+```
+
+---
+
+### STEP 15G: Harness Uses the QEMU Guest Agent Instead of SSH
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 15G: test-docker-qemu.py reaches the live and installed guest through the qemu-guest-agent virtio-serial channel; the agent reaches the installed disk as a recorded harness-only step
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/test-docker-qemu.py
+READ_ONLY_REFS:
+  - scripts/make-test-overlay-iso.py (overlay layout: /live/zz-novos-test.squashfs, /usr/share/novos-test/debs/, overlay.json)
+  - Open Questions: "Decided 2026-11-07 (test overlay)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Install sub-steps M5_INSTALL_PARTITION..BOOTLOADER keep their Calamares behavior; live-boot and install-e2e keep their exit codes.
+
+[PRE_GATE]
+test -f scripts/make-test-overlay-iso.py && grep -q '^def run_install_e2e_on_guest' scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. build_qemu_command: add a guest-agent channel (`-chardev socket,id=qga0,path=<tmp>/novos-qga-<pid>.sock,server=on,wait=off`, `-device virtio-serial-pci`, `-device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0`) for both the live boot and the installed-disk reboot.
+2. New `run_guest_exec(cmd, timeout)` over that socket: `guest-sync-delimited`, then `guest-exec` (`/bin/bash -c cmd`, capture-output), poll `guest-exec-status` until exited or timeout; returns a CompletedProcess-like result (returncode, decoded stdout/stderr). Replace every `run_guest_ssh` use (readiness probe, M3 live invariants, install sub-steps) with it; remove `run_guest_ssh` and the SSH host-forward. The guest runs commands as root through the agent; no passwords.
+3. Pre-flight: before booting, check the `--iso` contains `/live/zz-novos-test.squashfs` (xorriso, unprivileged); if not, fail with EXIT_ERROR naming `scripts/make-test-overlay-iso.py`.
+4. install-e2e: the bootloader sub-step no longer unmounts; a new milestone M5_INSTALL_TEST_AGENT (harness-only, recorded as not part of Calamares) runs after it: `dpkg -i` the .debs from `/usr/share/novos-test/debs/` in the target chroot (after the limine module's Golden Master snapshot, so the snapshot stays Calamares-identical), check `qemu-ga` is present in the target, then `umount -R`. Any failure fails the tier.
+5. Verdict payload records the overlay manifest (`/usr/share/novos-test/overlay.json` read in the live guest) and the production `filesystem.squashfs` sha256. Self-tests: update the milestone count; add a fake-agent socket test for `run_guest_exec` (sync, exec, status, base64 output).
+
+[POST_GATE]
+python3 -m py_compile scripts/test-docker-qemu.py && python3 scripts/test-docker-qemu.py --self-test && grep -q '^def run_guest_exec' scripts/test-docker-qemu.py && grep -q 'org.qemu.guest_agent.0' scripts/test-docker-qemu.py && grep -q 'M5_INSTALL_TEST_AGENT' scripts/test-docker-qemu.py && ! grep -q 'def run_guest_ssh' scripts/test-docker-qemu.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER VM TEST: `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --iso ./build/NovOS-sid-amd64-test.iso`.
+```
+
+---
+
 ### STEP 15C: install-e2e Checks the Installed System
 
 * **Recommended Command:** `/goal`
@@ -1765,10 +1846,10 @@ FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES.
 
 [PRE_GATE]
-grep -q 'shellprocess-novos.conf' scripts/test-docker-qemu.py && grep -q -- '--groups' scripts/test-docker-qemu.py
+grep -q 'shellprocess-novos.conf' scripts/test-docker-qemu.py && grep -q -- '--groups' scripts/test-docker-qemu.py && grep -q '^def run_guest_exec' scripts/test-docker-qemu.py
 
 [MUTATION_SPEC]
-1. New milestone M6_INSTALLED_CHECKS over SSH on the booted installed disk: every apt package of the selected groups (`novos-custom-tools packages list --profile <p> --source apt --with-arch`) is installed (`dpkg-query -W`); every custom-tool entry of those profiles runs (`zig version` equals the manifest version); `tailscale version` succeeds when `network` is selected; `/opt/zig` and everything under it is owned by 0:0 (`find /opt/zig ! -uid 0 -o ! -gid 0` prints nothing); `/usr/local/bin/zig` resolves into `/opt/zig`.
+1. New milestone M6_INSTALLED_CHECKS over the guest-agent channel (`run_guest_exec`, 15G) on the booted installed disk: every apt package of the selected groups (`novos-custom-tools packages list --profile <p> --source apt --with-arch`) is installed (`dpkg-query -W`); every custom-tool entry of those profiles runs (`zig version` equals the manifest version); `tailscale version` succeeds when `network` is selected; `/opt/zig` and everything under it is owned by 0:0 (`find /opt/zig ! -uid 0 -o ! -gid 0` prints nothing); `/usr/local/bin/zig` resolves into `/opt/zig`.
 2. Each failure names the profile, item and observed value; any failure fails the tier.
 
 [POST_GATE]
@@ -1802,7 +1883,7 @@ FORBIDDEN_SCOPE:
 grep -q 'M6_INSTALLED_CHECKS' scripts/test-docker-qemu.py
 
 [MUTATION_SPEC]
-1. New milestone M7_INSTALL_TIME_COMPONENTS over SSH on the booted installed disk, after M6: list installed packages (`dpkg-query -W`) that the ISO did not contain (diff against the live rootfs package list captured during the run), and for each, its installed version and apt origin (`apt-cache policy`, the `***` source; same Debian-mirror rule as 15A).
+1. New milestone M7_INSTALL_TIME_COMPONENTS over the guest-agent channel (`run_guest_exec`, 15G) on the booted installed disk, after M6: list installed packages (`dpkg-query -W`) that the ISO did not contain (diff against the live rootfs package list captured during the run), excluding the harness-only packages named in the 15F overlay manifest (`/usr/share/novos-test/overlay.json`), and for each, its installed version and apt origin (`apt-cache policy`, the `***` source; same Debian-mirror rule as 15A).
 2. Every third-party install-time package of the selected groups must be installed with a non-Debian origin from its configured repo (e.g. tailscale from pkgs.tailscale.com); a missing package or unexpected origin fails the tier, naming group, package, version and origin.
 3. Write `install-components.tsv` (package, version, arch, origin, group) to the tier's artifact directory, so a failed run is attributable to exact (component, version) pairs.
 4. Keep M6 and existing exit codes unchanged.
