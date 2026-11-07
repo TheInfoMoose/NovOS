@@ -128,7 +128,7 @@
 | **STEP 9J** | **COMPLETED** | `/goal` | Dev profile installs `custom-tool` entries (zig) | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9K** | **COMPLETED** | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9L** | **COMPLETED** | `/goal` | Atomic binary install (temp + rename) so self-install never hits ETXTBSY | `crates/novos-custom-tools/src/main.rs` |
-| **STEP 9M** | PLANNED | `/goal` | Tarball installs owned by root (`tar --no-same-owner`) **[USER BUILD]** | `crates/novos-custom-tools/src/main.rs` |
+| **STEP 9M** | **COMPLETED** | `/goal` | Tarball installs owned by root (`tar --no-same-owner`) **[USER BUILD]** | `crates/novos-custom-tools/src/main.rs` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |

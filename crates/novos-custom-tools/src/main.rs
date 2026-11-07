@@ -783,7 +783,7 @@ pub fn build_execution_plan(entry: &ToolEntry, repo_root: &Path) -> Result<Execu
         let steps = vec![
             format!("curl -fsSL -o <download> {url}"),
             format!("sha256sum <download> == {sha256} (abort before extracting on mismatch)"),
-            format!("tar -xf <download> --strip-components=1 -C {install_dir}"),
+            format!("tar -xf <download> --strip-components=1 --no-same-owner -C {install_dir}"),
             format!("ln -s {install_dir}/{binary} {install_target} (replace symlink only)"),
         ];
         return Ok(ExecutionPlan {
@@ -976,6 +976,20 @@ pub fn replace_symlink(dest: &Path, link: &Path) -> Result<(), String> {
     })
 }
 
+/// `tar` arguments for extracting a verified tarball into `install_dir`.
+/// `--no-same-owner` makes the extracted files owned by the installing user (root)
+/// instead of the uid/gid recorded in the archive.
+fn tarball_extract_args(archive: &Path, install_dir: &str) -> Vec<String> {
+    vec![
+        "-xf".to_string(),
+        archive.to_string_lossy().into_owned(),
+        "--strip-components=1".to_string(),
+        "--no-same-owner".to_string(),
+        "-C".to_string(),
+        install_dir.to_string(),
+    ]
+}
+
 fn install_tarball(entry: &ToolEntry, plan: &ExecutionPlan) -> Result<(), String> {
     let url = plan.url.as_deref().ok_or("Missing url")?;
     let sha256 = plan.sha256.as_deref().ok_or("Missing sha256")?;
@@ -1002,13 +1016,7 @@ fn install_tarball(entry: &ToolEntry, plan: &ExecutionPlan) -> Result<(), String
         fs::create_dir_all(install_dir)
             .map_err(|e| format!("Failed creating {install_dir}: {e}"))?;
         let st = Command::new("tar")
-            .args([
-                "-xf",
-                &archive.to_string_lossy(),
-                "--strip-components=1",
-                "-C",
-                install_dir,
-            ])
+            .args(tarball_extract_args(&archive, install_dir))
             .status()
             .map_err(|e| format!("Failed invoking tar: {e}"))?;
         if !st.success() {
@@ -1811,10 +1819,10 @@ pub fn test_tarball_validation_and_plan() -> Result<(), String> {
     if !plan
         .steps
         .iter()
-        .any(|s| s.contains("--strip-components=1"))
+        .any(|s| s.contains("--strip-components=1") && s.contains("--no-same-owner"))
     {
         return Err(format!(
-            "Dry-run plan lacks extraction step: {:?}",
+            "Dry-run plan lacks extraction step with --no-same-owner: {:?}",
             plan.steps
         ));
     }
@@ -2346,6 +2354,25 @@ mod tests {
     #[test]
     fn unit_tarball_validation_and_plan() {
         test_tarball_validation_and_plan().unwrap();
+    }
+
+    #[test]
+    fn unit_tarball_extract_args_no_same_owner() {
+        let args = tarball_extract_args(Path::new("/tmp/archive"), "/opt/zig");
+        assert_eq!(
+            args,
+            [
+                "-xf",
+                "/tmp/archive",
+                "--strip-components=1",
+                "--no-same-owner",
+                "-C",
+                "/opt/zig",
+            ]
+        );
+        let pos = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+        assert!(pos("--strip-components=1") < pos("--no-same-owner"));
+        assert!(pos("--no-same-owner") < pos("-C"));
     }
 
     #[test]
