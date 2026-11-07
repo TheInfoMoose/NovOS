@@ -894,16 +894,37 @@ fn make_temp_dir(prefix: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Install `src` at `dst` with mode 0755, replacing `dst` atomically.
+///
+/// The bytes go to a temp file in `dst`'s directory, which is then renamed
+/// over `dst`. rename(2) swaps the directory entry, so a `dst` that is
+/// currently executing keeps running its old inode and no ETXTBSY occurs.
 fn install_binary_mode_755(src: &Path, dst: &Path) -> Result<(), String> {
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let (s, d) = (src.display(), dst.display());
+    let fail = |op: &str, e: std::io::Error| format!("Failed installing {s} to {d}: {op}: {e}");
+    let parent = dst.parent().filter(|p| !p.as_os_str().is_empty());
+    let parent = parent.unwrap_or(Path::new("."));
+    let Some(name) = dst.file_name().map(|n| n.to_string_lossy()) else {
+        return Err(format!("Failed installing {s} to {d}: no file name"));
+    };
+    let tmp = parent.join(format!(".{name}.novos-tmp.{}", std::process::id()));
+    let result = (|| {
+        fs::create_dir_all(parent).map_err(|e| fail("create parent directory", e))?;
+        fs::copy(src, &tmp).map_err(|e| fail("copy to temp file", e))?;
+        let mode = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&tmp, mode).map_err(|e| fail("set mode 0755 on temp file", e))?;
+        fs::rename(&tmp, dst).map_err(|e| fail("rename temp file over target", e))
+    })();
+    match result {
+        Err(err) if tmp.exists() => match fs::remove_file(&tmp) {
+            Ok(()) => Err(err),
+            Err(e) => Err(format!(
+                "{err}; also failed removing temp file {}: {e}",
+                tmp.display()
+            )),
+        },
+        other => other,
     }
-    fs::copy(src, dst)
-        .map_err(|e| format!("Failed copying {} to {}: {e}", src.display(), dst.display()))?;
-    let mut perms = fs::metadata(dst).map_err(|e| e.to_string())?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(dst, perms).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 /// Run `sha256sum` on `path` and fail unless the digest equals `expected`.
@@ -2330,5 +2351,117 @@ mod tests {
     #[test]
     fn unit_replace_symlink_refuses_regular_file() {
         test_replace_symlink_refuses_regular_file().unwrap();
+    }
+
+    const ETXTBSY: i32 = 26;
+
+    fn tmp_leftovers(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".novos-tmp."))
+            .collect()
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn unit_install_binary_fresh_path_mode_755() {
+        let dir = make_temp_dir("novos-install-fresh-").unwrap();
+        let src = dir.join("src");
+        fs::write(&src, b"payload").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+        let dst = dir.join("sub/dir/tool");
+        install_binary_mode_755(&src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"payload");
+        assert_eq!(mode_of(&dst), 0o755);
+        assert!(tmp_leftovers(&dir.join("sub/dir")).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unit_install_binary_replaces_existing_file() {
+        let dir = make_temp_dir("novos-install-replace-").unwrap();
+        let src = dir.join("src");
+        fs::write(&src, b"new").unwrap();
+        let dst = dir.join("tool");
+        fs::write(&dst, b"old contents").unwrap();
+        fs::set_permissions(&dst, fs::Permissions::from_mode(0o644)).unwrap();
+        install_binary_mode_755(&src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"new");
+        assert_eq!(mode_of(&dst), 0o755);
+        assert!(tmp_leftovers(&dir).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unit_install_binary_replaces_running_binary() {
+        let sleep_bin = ["/bin/sleep", "/usr/bin/sleep"]
+            .iter()
+            .map(Path::new)
+            .find(|p| p.is_file())
+            .expect("no sleep binary on host");
+        let dir = make_temp_dir("novos-install-running-").unwrap();
+        let dst = dir.join("tool");
+        fs::copy(sleep_bin, &dst).unwrap();
+        fs::set_permissions(&dst, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // A concurrent fork in another test thread can briefly inherit the
+        // write fd of the copy above, making exec fail with ETXTBSY. Retry
+        // only that error; spawn() returns Ok only after exec succeeded, so
+        // once it does, `dst` is a running executable.
+        let mut child = None;
+        for _ in 0..50 {
+            match Command::new(&dst).arg("30").spawn() {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => panic!("spawn {}: {e}", dst.display()),
+            }
+        }
+        let mut child = child.expect("spawn kept failing with ETXTBSY");
+
+        // Precondition: writing in place to the running file is refused,
+        // which is what broke the old fs::copy(src, dst).
+        let in_place = fs::OpenOptions::new().write(true).open(&dst);
+        let precondition = match in_place {
+            Err(e) => e.raw_os_error() == Some(ETXTBSY),
+            Ok(_) => false,
+        };
+
+        let src = dir.join("src");
+        fs::write(&src, b"replacement").unwrap();
+        let result = install_binary_mode_755(&src, &dst);
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        assert!(precondition, "running file was writable in place");
+        result.unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"replacement");
+        assert_eq!(mode_of(&dst), 0o755);
+        assert!(tmp_leftovers(&dir).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unit_install_binary_missing_src_leaves_no_temp() {
+        let dir = make_temp_dir("novos-install-missing-").unwrap();
+        let src = dir.join("does-not-exist");
+        let dst = dir.join("tool");
+        fs::write(&dst, b"keep").unwrap();
+        let err = install_binary_mode_755(&src, &dst).unwrap_err();
+        assert!(err.contains(&src.display().to_string()), "{err}");
+        assert!(err.contains(&dst.display().to_string()), "{err}");
+        assert!(err.contains("copy to temp file"), "{err}");
+        assert_eq!(fs::read(&dst).unwrap(), b"keep");
+        assert!(tmp_leftovers(&dir).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
