@@ -358,7 +358,12 @@ pub enum Source {
     Apt,
     Flatpak,
     NovosMeta,
+    /// Installed by `novos-custom-tools --tool <name>` from
+    /// `custom-tools/manifest.yaml`; never resolved through apt.
+    CustomTool,
 }
+
+pub const SOURCE_CHOICES: &str = "apt|flatpak|novos-meta|custom-tool";
 
 impl Source {
     pub fn parse(s: &str) -> Option<Source> {
@@ -366,6 +371,7 @@ impl Source {
             "apt" => Some(Source::Apt),
             "flatpak" => Some(Source::Flatpak),
             "novos-meta" => Some(Source::NovosMeta),
+            "custom-tool" => Some(Source::CustomTool),
             _ => None,
         }
     }
@@ -375,6 +381,7 @@ impl Source {
             Source::Apt => "apt",
             Source::Flatpak => "flatpak",
             Source::NovosMeta => "novos-meta",
+            Source::CustomTool => "custom-tool",
         }
     }
 }
@@ -393,6 +400,14 @@ impl Arch {
             "i386" => Some(Arch::I386),
             "all" => Some(Arch::All),
             _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arch::Amd64 => "amd64",
+            Arch::I386 => "i386",
+            Arch::All => "all",
         }
     }
 
@@ -638,7 +653,7 @@ fn load_entry(node: &YamlNode, ctx: &str, errors: &mut Vec<String>) -> Option<Pa
         let parsed = Source::parse(&s);
         if parsed.is_none() {
             errors.push(format!(
-                "{ctx}: invalid source {s:?}; expected apt|flatpak|novos-meta"
+                "{ctx}: invalid source {s:?}; expected {SOURCE_CHOICES}"
             ));
         }
         parsed
@@ -851,6 +866,21 @@ fn check_entries(
                 e.source.as_str()
             ));
         }
+        if e.source == Source::CustomTool {
+            if e.arch != Arch::Amd64 {
+                errors.push(format!(
+                    "{owner}: {} has source custom-tool but arch {}; custom-tool entries must be amd64",
+                    e.name,
+                    e.arch.as_str()
+                ));
+            }
+            if e.alternative.is_some() {
+                errors.push(format!(
+                    "{owner}: {} has source custom-tool; custom-tool entries must not set 'alternative'",
+                    e.name
+                ));
+            }
+        }
         if let Some(alt) = &e.alternative {
             if *alt == e.name {
                 errors.push(format!("{owner}: {} names itself as alternative", e.name));
@@ -888,7 +918,8 @@ impl PackageManifest {
     }
 
     /// Semantic validation: unique group/subgroup ids, known profiles,
-    /// i386 only for apt, declared alternatives, no empty groups.
+    /// i386 only for apt, custom-tool entries amd64 without alternative,
+    /// declared alternatives, no empty groups.
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.groups.is_empty() {
@@ -1019,7 +1050,8 @@ impl PackageManifest {
     }
 
     /// Deterministic Calamares netinstall.yaml: profile-layer groups only,
-    /// apt and novos-meta packages (flatpak refs are provisioned by novos-setup).
+    /// apt and novos-meta packages (flatpak refs are provisioned by novos-setup;
+    /// custom-tool entries are installed by novos-custom-tools).
     pub fn render_netinstall(&self) -> String {
         let mut blocks = Vec::new();
         for g in self.groups.iter().filter(|g| g.layer == Layer::Profile) {
@@ -1249,6 +1281,7 @@ groups:
         packages:
           - {name: novos-profile-wifi, source: novos-meta, arch: all, required: true, alternative: null, smoke: null}
           - {name: iwd, source: apt}
+          - {name: zig, source: custom-tool, arch: amd64, required: true, alternative: null, smoke: null}
 "#;
 
     const FIXTURE_NETINSTALL: &str = r#"# ==============================================================================
@@ -1340,9 +1373,9 @@ groups:
             ManifestSummary {
                 groups: 3,
                 subgroups: 3,
-                entries: 10,
-                unique_packages: 10,
-                required: 9,
+                entries: 11,
+                unique_packages: 11,
+                required: 10,
                 smoke_checks: 1,
             }
         );
@@ -1355,8 +1388,8 @@ groups:
         let s = m.summary();
         assert_eq!(s.groups, 17);
         assert_eq!(s.subgroups, 38);
-        assert_eq!(s.entries, 287);
-        assert_eq!(s.unique_packages, 257);
+        assert_eq!(s.entries, 286);
+        assert_eq!(s.unique_packages, 256);
         let base = m
             .list(
                 &ListFilter {
@@ -1489,6 +1522,7 @@ groups:
                 "com.valvesoftware.Steam",
                 "novos-profile-wifi",
                 "iwd",
+                "zig",
             ])
         );
         let apt = ListFilter {
@@ -1533,6 +1567,87 @@ groups:
             ..Default::default()
         };
         assert_eq!(m.list(&meta, &none).unwrap(), strs(&["novos-profile-wifi"]));
+        let custom = ListFilter {
+            source: Some(Source::CustomTool),
+            with_arch: true,
+            ..Default::default()
+        };
+        assert_eq!(m.list(&custom, &none).unwrap(), strs(&["zig"]));
+    }
+
+    #[test]
+    fn custom_tool_source_parse_and_validation() {
+        assert_eq!(Source::parse("custom-tool"), Some(Source::CustomTool));
+        assert_eq!(Source::CustomTool.as_str(), "custom-tool");
+        assert_eq!(Source::parse("custom_tool"), None);
+        let errors = load_packages_text(
+            &FIXTURE.replace("{name: iwd, source: apt}", "{name: iwd, source: tarball}"),
+        )
+        .unwrap_err();
+        assert!(
+            has_error(
+                &errors,
+                "invalid source \"tarball\"; expected apt|flatpak|novos-meta|custom-tool"
+            ),
+            "{errors:?}"
+        );
+        let zig = fixture().groups[2].subgroups[0].packages[2].clone();
+        assert_eq!(zig.source, Source::CustomTool);
+
+        let mut m = fixture();
+        m.groups[2].subgroups[0].packages[2].arch = Arch::All;
+        assert!(has_error(
+            &m.validate(),
+            "zig has source custom-tool but arch all; custom-tool entries must be amd64"
+        ));
+
+        let mut m = fixture();
+        m.groups[2].subgroups[0].packages[2].arch = Arch::I386;
+        let errors = m.validate();
+        assert!(has_error(
+            &errors,
+            "zig has source custom-tool but arch i386"
+        ));
+        assert!(has_error(&errors, "i386 is only valid for apt"));
+
+        let mut m = fixture();
+        m.groups[2].subgroups[0].packages[2].alternative = Some("iwd".to_string());
+        assert!(has_error(
+            &m.validate(),
+            "zig has source custom-tool; custom-tool entries must not set 'alternative'"
+        ));
+    }
+
+    #[test]
+    fn custom_tool_excluded_from_apt_and_netinstall() {
+        let m = fixture();
+        let apt = m
+            .list(
+                &ListFilter {
+                    source: Some(Source::Apt),
+                    with_arch: true,
+                    ..Default::default()
+                },
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert!(!apt.contains(&"zig".to_string()));
+        let rendered = m.render_netinstall();
+        assert!(!rendered.contains("zig"), "{rendered}");
+        assert_eq!(rendered, FIXTURE_NETINSTALL);
+
+        let real = load_packages(&repo_file("config/packages.yaml")).unwrap();
+        let custom = real
+            .list(
+                &ListFilter {
+                    source: Some(Source::CustomTool),
+                    ..Default::default()
+                },
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(custom, strs(&["zig"]));
+        assert!(!real.render_netinstall().contains("- zig\n"));
     }
 
     #[test]

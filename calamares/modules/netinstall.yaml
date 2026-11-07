@@ -154,7 +154,6 @@
         - nodejs
         - npm
         - golang-go
-        - zig
         - python3
         - pkg-config
         - libssl-dev
@@ -166,7 +165,6 @@
         - gh
         - lazygit
         - alacritty
-        - ghostty
     - name: "AppImage, RPM & DEB Packaging Tools"
       description: "Alien package converter, rpm2cpio, cpio, patchelf, squashfs-tools, desktop-file-utils, and zsync."
       selected: true

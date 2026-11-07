@@ -372,7 +372,7 @@ groups:
           - {name: nodejs, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: npm, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: golang-go, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
-          - {name: zig, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+          - {name: zig, source: custom-tool, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: python3, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: pkg-config, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: libssl-dev, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
@@ -385,7 +385,6 @@ groups:
           - {name: gh, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: lazygit, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
           - {name: alacritty, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
-          - {name: ghostty, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - id: dev-packaging
         name: "AppImage, RPM & DEB Packaging Tools"
         description: "Alien package converter, rpm2cpio, cpio, patchelf, squashfs-tools, desktop-file-utils, and zsync."
