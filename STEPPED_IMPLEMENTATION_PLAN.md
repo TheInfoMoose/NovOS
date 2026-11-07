@@ -95,6 +95,12 @@
 * **Decided 2026-11-06 (9G–9J):** the first build after 9E failed at Stage 5.1d on `zig`, `ghostty` and `tailscale` (none are in sid or the configured repos; zig and ghostty had been faked by `0.0.1~novos1` marker debs until 9D). The user chose: tailscale → official signed apt repo; zig → official ziglang.org tarball, pinned version + sha256, through `novos-custom-tools`; ghostty → removed from the image (alacritty stays). No further approval needed for these three.
 * **Before 9I:** zig and ghostty leave the generated Calamares `netinstall.yaml` (the renderer emits apt/novos-meta only). zig still reaches the image through the dev profile (9J). Confirm that is acceptable, or say if zig must stay visible in the installer's package list. **Accepted by the user.** Correction found in 9J: `config/build.env` sets `BUILD_PROFILES="none"`, so the dev profile never runs at build time, and post-Calamares skipped online downloads, so zig reached no installed system. **Decided 2026-11-06:** post-Calamares downloads custom-tool entries when it detects the dev group; a failed download warns and continues (STEP 9K).
 * **Before 14A:** `docs/PROFILES.md` still lists `ghostty` and apt `zig`; fold that into the docs refresh.
+* **Decided 2026-11-07 (automatic promotion):** the build after bb26b23 was stopped by the variance lock because XanMod moved 7.2.15 → 7.3.3 and its ABI-named packages read as removals. The user set the policy that replaces "every change waits for a user bless":
+  - A newer-or-equal version of any component (kernel, package, app) is automatically approved for testing. Only a recorded failure on that exact version holds it back.
+  - Phases: fresh build, then VM `live-boot`, then VM `install-e2e`. Passing all three promotes the candidate to the golden snapshot automatically. Drops, downgrades and unlocks stay user-only.
+  - A failure with several changed components is isolated by automatic bisection (fresh rebuilds with halves held at golden), so only the culprit (component, version) is held.
+  - Home: the `neb release` contract first (13A amended, built in 13B). NovOS-side: 12B (amended), 15A–15D. Until 13C lands, a kernel ABI rename still trips the Python variance lock; unblock it with the user-only `bless-golden`.
+* **Before 15B:** install-e2e cannot drive the Calamares UI; it reproduces Calamares's partition/mount/netinstall/shellprocess configuration from `calamares/modules/*`. Confirm that is an acceptable VM gate, with the manual Calamares install kept as an occasional spot check.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
 
 ---
@@ -140,13 +146,17 @@
 | **STEP 11C** | PLANNED | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` |
 | **STEP 11D** | PLANNED | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` |
 | **STEP 12A** | PLANNED | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` |
-| **STEP 12B** | PLANNED | `/boost` | Release records + `--pin-last-good` fallback | `scripts/nebulous-ctl.py`, `scripts/build-novos.sh`, `config/releases/README.md` |
+| **STEP 12B** | PLANNED (blocked on 13B, 15A) | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` |
 | **STEP 12C** | PLANNED | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` |
-| **STEP 13A** | PLANNED | `/goal` | `neb release` interface contract | `docs/NEB_RELEASE_CONTRACT.md` |
+| **STEP 13A** | PLANNED | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` |
 | **STEP 13B** | EXTERNAL | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo |
 | **STEP 13C** | PLANNED (blocked on 13B) | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` |
 | **STEP 13D** | PLANNED (user-approved delete) | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) |
 | **STEP 14A** | PLANNED | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` |
+| **STEP 15A** | PLANNED | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
+| **STEP 15B** | PLANNED | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
+| **STEP 15C** | PLANNED | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
+| **STEP 15D** | PLANNED (blocked on 13B, 12B) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
 
 ---
 
@@ -1416,28 +1426,30 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 ```text
 [STEP_ID]
-STEP 12B: bless-golden writes a release record; build-novos.sh --pin-last-good builds fresh against it
+STEP 12B: build-novos.sh builds fresh against neb release records and holds (--pin-last-good, --pin-packages, --hold-file)
 
 [SCOPE_LOCK]
 ALLOWED_FILES:
-  - scripts/nebulous-ctl.py
   - scripts/build-novos.sh
   - config/releases/README.md
 READ_ONLY_REFS:
   - config/build.env
+  - docs/NEB_RELEASE_CONTRACT.md ("Candidate lifecycle": release records, holds file, artifact cache)
+  - scripts/stages/06-snapshot-finalize.sh (15A third-party .deb export)
 FORBIDDEN_SCOPE:
-  - Any file not listed in ALLOWED_FILES. Agents never create config/releases/*.toml (user-only via bless).
+  - Any file not listed in ALLOWED_FILES. Agents never create config/releases/*.toml or .tracker/release/* (written only by `neb release promote` / `record-failure`). No `trusted=yes` sources.
 
 [PRE_GATE]
-grep -q 'DEBIAN_SNAPSHOT' config/build.env && grep -q 'def cmd_bless_golden' scripts/nebulous-ctl.py
+grep -q 'DEBIAN_SNAPSHOT' config/build.env && grep -q 'artifact-cache' scripts/build-novos.sh && neb release --help | grep -q holds
 
 [MUTATION_SPEC]
-1. nebulous-ctl.py bless-golden: also write config/releases/<DISTRO_VERSION>-<UTC>.toml {snapshot (from ISO /etc/novos/build-snapshot), iso_sha256, golden_sha256, limine_ref, third_party versions (xanmod, cosmic, docker, code, antigravity)}; refuses unless run interactively (tty) — automation cannot bless. New `pins-from-release <file>` emits apt preferences pinning third-party packages to recorded versions.
-2. build-novos.sh: `--pin-last-good` sets DEBIAN_SNAPSHOT from the newest release record and installs third-party pins; still a full fresh Stage 1–6 build. `--pin-packages a,b` pins only listed packages to the last-good snapshot (adds snapshot source at priority 100 + per-package Pin-Priority 1001).
-3. config/releases/README.md: format, who writes records, how fallback works.
+1. Amended 2026-11-07 (automatic promotion policy): release records are written by `neb release promote` after a candidate passes build + VM, not by bless-golden. This step no longer touches nebulous-ctl.py.
+2. build-novos.sh `--hold-file <path>` (format from the contract: component, held_version, debian|third_party): Debian components are pinned to their held version via a snapshot.debian.org source at priority 100 plus per-package Pin-Priority 1001 (DEBIAN_SNAPSHOT from the release record that last carried that version); third-party components are installed from the 15A cache by path (`apt-get install ./<file>.deb`), never from a `trusted=yes` source. A held version missing from both the snapshot and the cache is fatal and names the component.
+3. `--pin-last-good` = `--hold-file` generated by `neb release holds --all-last-good`; `--pin-packages a,b` = holds for only those components. Every mode is still a full fresh Stage 1–6 build.
+4. config/releases/README.md: record format, written by `neb release promote` only, how holds and fallback work.
 
 [POST_GATE]
-python3 -m py_compile scripts/nebulous-ctl.py && python3 scripts/nebulous-ctl.py --self-test && bash -n scripts/build-novos.sh && grep -q -- '--pin-last-good' scripts/build-novos.sh && test -f config/releases/README.md
+bash -n scripts/build-novos.sh && grep -q -- '--hold-file' scripts/build-novos.sh && grep -q -- '--pin-last-good' scripts/build-novos.sh && ! grep -n 'trusted=yes' scripts/build-novos.sh && test -f config/releases/README.md
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
@@ -1491,7 +1503,9 @@ ALLOWED_FILES:
   - docs/NEB_RELEASE_CONTRACT.md
 READ_ONLY_REFS:
   - scripts/nebulous-ctl.py, scripts/mcp_nebulous_ci.py, .nebulous/*.toml, .tracker/*
+  - scripts/test-docker-qemu.py (live-boot and install-e2e tiers, exit codes, artifacts)
   - /srv/devshare/Nebulous/README.md
+  - Open Questions: "Decided 2026-11-07 (automatic promotion)"
 FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES. No edits in /srv/devshare/Nebulous.
 
@@ -1502,9 +1516,17 @@ test -f scripts/nebulous-ctl.py && test -f /srv/devshare/Nebulous/Cargo.toml
 1. Map every nebulous-ctl subcommand (extract-golden, verify-variance, record-attempt, check-guardrail, bless-golden, approve-variance, unlock-loop, pins-from-release, --self-test) and every MCP tool in mcp_nebulous_ci.py to a `neb release …` / `neb mcp` equivalent: arguments, exit codes (keep EXIT_VARIANCE_LOCK value), JSON output schema, file locations under .tracker/release/ (golden.toml, approvals.toml, releases/*.toml, loop-state).
 2. Non-functional requirements: user-only bless/approve (tty check), forward-only variance policy, no Python runtime.
 3. Migration and acceptance checklist used by 13C/13D.
+4. "Candidate lifecycle" section (user policy 2026-11-07):
+   a. Component identity: Debian source package (dpkg `Source:`, else package name); a kernel line is its meta package (e.g. `linux-xanmod-x64v3`) plus its ABI-named image/headers. A renamed ABI package (linux-image-7.2.15-… → linux-image-7.3.3-…) is an upgrade, not a removal. A removal is a component absent from the new ISO; it and any downgrade still need user `approve-variance`.
+   b. `neb release candidate --iso <iso>`: every component whose version is newer than golden, or new, is automatically approved for testing. Output: the changed set and the holds in force.
+   c. Failure ledger `.tracker/release/failures.toml`: (component, version, phase, log path, UTC time). A version in the ledger is held at last-good on later builds; a newer version of that component is eligible again automatically. `neb release holds [--all-last-good] [--format hold-file]` emits the hold file consumed by build-novos.sh `--hold-file` (12B).
+   d. Phases in order: `build`, `vm-live-boot`, `vm-install-e2e` (scripts/test-docker-qemu.py tiers). `neb release record-phase <phase> pass|fail --log <path>`. A failure is re-run once on identical inputs before it counts (flake guard).
+   e. `neb release promote --iso <iso>`: only when all three phases passed for that candidate; atomically writes golden.toml, `releases/<version>-<UTC>.toml` (snapshot, iso sha256, golden sha256, component versions, third-party cache paths) and clears resolved holds. No tty requirement: automation promotes. bless-golden, approve-variance and unlock-loop stay user-only (tty).
+   f. `neb release bisect start|next|record pass|fail`: on a confirmed failure with N>1 changed components, deterministic halving (kernel line counts as one component); each round emits a hold file for a fresh build. Ends when one component remains → `record-failure` on that (component, version), then the candidate minus the culprit is re-run through all phases and promoted if it passes. Both halves pass while the whole fails → record an "interaction" failure on the set, hold it, stop and report. Both halves fail → bisect each. Hard cap of 2·ceil(log2 N)+2 rounds, then stop and report. State in `.tracker/release/bisect.toml`.
+   g. Exit codes and JSON for every new command; a candidate never blocks on an upgrade unless the ledger holds that exact version.
 
 [POST_GATE]
-for c in extract-golden verify-variance record-attempt check-guardrail bless-golden approve-variance unlock-loop pins-from-release; do grep -q "$c" docs/NEB_RELEASE_CONTRACT.md || exit 1; done
+for c in extract-golden verify-variance record-attempt check-guardrail bless-golden approve-variance unlock-loop pins-from-release candidate record-phase promote bisect holds record-failure failures.toml 'Candidate lifecycle'; do grep -q -- "$c" docs/NEB_RELEASE_CONTRACT.md || exit 1; done
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
@@ -1635,15 +1657,161 @@ FORBIDDEN_SCOPE:
 test -f config/packages.yaml && grep -q 'verify-variance' scripts/build-novos.sh
 
 [MUTATION_SPEC]
-1. BUILD_AND_TEST: variance lock + REJECTED ISO, suppression ratchet, availability gate, --pin-last-good / --pin-packages, DEBIAN_SNAPSHOT, smoke-apps run, how the user blesses a release.
+1. BUILD_AND_TEST: candidate lifecycle (`scripts/release-candidate.sh`: build → live-boot → install-e2e → automatic promotion; bisection and the failure ledger; holds), variance lock + REJECTED ISO, suppression ratchet, availability gate, --pin-last-good / --pin-packages, DEBIAN_SNAPSHOT, smoke-apps run, how the user blesses a release.
 2. ARCHITECTURE: package manifest → netinstall render → novos-setup flow; base-admin set and dracut mdraid/lvm/crypt; native Steam; Limine pin.
 3. PROFILES: profiles sourced from config/packages.yaml; install failure report (`novos-setup --report`); app-health swaps.
 
 [POST_GATE]
-for k in 'verify-variance' 'packages.yaml' 'pin-last-good' 'novos-setup --report' 'app-health'; do grep -rq -- "$k" docs/ || exit 1; done
+for k in 'verify-variance' 'packages.yaml' 'pin-last-good' 'novos-setup --report' 'app-health' 'release-candidate' 'bisect'; do grep -rq -- "$k" docs/ || exit 1; done
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+## Phase G8: Candidate Promotion (Decided 2026-11-07)
+
+Order: 15B → 15C (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B and 15C.
+
+### STEP 15A: Third-Party Artifact Cache
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 15A: Each build exports the exact third-party .debs it installed to a host cache, so later builds can hold a component at that version
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/06-snapshot-finalize.sh
+  - scripts/build-novos.sh
+READ_ONLY_REFS:
+  - scripts/stages/03-core-system.sh (third-party repos: XanMod, Debian COSMIC, Docker, VS Code, Tailscale, Antigravity; the XanMod retry path runs `apt-get clean`)
+  - docs/NEB_RELEASE_CONTRACT.md if present ("Candidate lifecycle": cache paths in release records)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change the existing `apt-get clean` line's behavior for the image. No `trusted=yes` sources.
+
+[PRE_GATE]
+grep -q 'apt-get clean' scripts/stages/06-snapshot-finalize.sh && ! grep -n 'artifact-cache' scripts/build-novos.sh
+
+[MUTATION_SPEC]
+1. build-novos.sh: `ARTIFACT_CACHE_DIR` (default `${REPO_ROOT}/build/artifact-cache`, owned by SUDO_USER), exported to Stage 6.
+2. Stage 6, before the chroot `apt-get clean`: list installed packages whose installed version's apt origin is not a Debian mirror (chroot `apt-cache policy <pkg>`, the source of the `***` version). For each, copy `/var/cache/apt/archives/<pkg>_<ver>_<arch>.deb` to `${ARTIFACT_CACHE_DIR}/debs/`; if it is not cached, fetch exactly that version with chroot `apt-get download <pkg>=<ver>`. A package that can be neither copied nor downloaded is fatal and names it.
+3. Write `${ARTIFACT_CACHE_DIR}/index.toml` entries (package, version, arch, file, sha256, source repo, ISO build UTC). Existing files are kept (the cache accumulates across builds); identical name+version with a different sha256 is fatal.
+4. No new `|| true`.
+
+[POST_GATE]
+bash -n scripts/stages/06-snapshot-finalize.sh && bash -n scripts/build-novos.sh && grep -q 'ARTIFACT_CACHE_DIR' scripts/build-novos.sh && grep -q 'apt-get download' scripts/stages/06-snapshot-finalize.sh && grep -q 'index.toml' scripts/stages/06-snapshot-finalize.sh && ! git diff -U0 scripts/stages/06-snapshot-finalize.sh scripts/build-novos.sh | grep -E '^\+' | grep '|| true'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh build; `build/artifact-cache/index.toml` must list the XanMod 7.3.3 image/headers and the tailscale .deb.
+```
+
+---
+
+### STEP 15B: install-e2e Follows the Real Calamares Path
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 15B: Make the install-e2e tier reproduce what Calamares does (partition/mount config, netinstall groups, shellprocess post-install) instead of its own simplified install
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/test-docker-qemu.py
+READ_ONLY_REFS:
+  - calamares/settings.conf, calamares/modules/*.conf, calamares/modules/netinstall.yaml, calamares/modules/limine-bootloader/main.py
+  - Open Questions: "Before 15B"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Destructive commands run only inside the guest against the virtual /dev/vda, never on the host.
+
+[PRE_GATE]
+grep -q '^def run_install_e2e_on_guest' scripts/test-docker-qemu.py && test -f calamares/modules/netinstall.yaml
+
+[MUTATION_SPEC]
+1. run_install_e2e_on_guest: read the Btrfs subvolume list and mount points from the Calamares mount module config (all 10: `@`, `@home`, `@snapshots`, `@var_log`, `@var_cache`, `@flatpak`, `@docker`, `@containerd`, `@llm`, `@devshare`) instead of the hard-coded 7; ESP layout from the Calamares partition config.
+2. After unpacking the rootfs: install the packages of the selected netinstall groups into the target (new `--groups` option, default `dev,network`, names as in netinstall.yaml), then run every command of `calamares/modules/shellprocess-novos.conf` in the target chroot with `@@username@@` replaced by the test user, then the limine-bootloader module.
+3. Record each sub-step as its own milestone (partition, rootfs, netinstall, shellprocess, bootloader) with pass/fail and log excerpt; any failure fails the tier.
+4. Keep `live-boot` unchanged; keep the existing exit codes.
+
+[POST_GATE]
+python3 -m py_compile scripts/test-docker-qemu.py && grep -q 'shellprocess-novos.conf' scripts/test-docker-qemu.py && grep -q -- '--groups' scripts/test-docker-qemu.py && grep -q '@devshare' scripts/test-docker-qemu.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 15C: install-e2e Checks the Installed System
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15C: After booting the installed disk, install-e2e verifies the selected groups' packages, custom tools and ownership
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/test-docker-qemu.py
+READ_ONLY_REFS:
+  - config/packages.yaml, custom-tools/manifest.yaml
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES.
+
+[PRE_GATE]
+grep -q 'shellprocess-novos.conf' scripts/test-docker-qemu.py && grep -q -- '--groups' scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. New milestone M6_INSTALLED_CHECKS over SSH on the booted installed disk: every apt package of the selected groups (`novos-custom-tools packages list --profile <p> --source apt --with-arch`) is installed (`dpkg-query -W`); every custom-tool entry of those profiles runs (`zig version` equals the manifest version); `tailscale version` succeeds when `network` is selected; `/opt/zig` and everything under it is owned by 0:0 (`find /opt/zig ! -uid 0 -o ! -gid 0` prints nothing); `/usr/local/bin/zig` resolves into `/opt/zig`.
+2. Each failure names the profile, item and observed value; any failure fails the tier.
+
+[POST_GATE]
+python3 -m py_compile scripts/test-docker-qemu.py && grep -q 'M6_INSTALLED_CHECKS' scripts/test-docker-qemu.py && grep -q 'zig version' scripts/test-docker-qemu.py && grep -q 'tailscale version' scripts/test-docker-qemu.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 15D: `release-candidate.sh` Pipeline
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 15D: One user-run command takes a candidate through build, VM live-boot and VM install-e2e, promotes it on success, and bisects on failure
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/release-candidate.sh
+READ_ONLY_REFS:
+  - docs/NEB_RELEASE_CONTRACT.md ("Candidate lifecycle")
+  - scripts/build-novos.sh (--hold-file), scripts/test-docker-qemu.py (tiers, --groups)
+  - CLAUDE.md §1, §2, §5 (fresh builds only; the user runs it)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No `--from-stage`, no `--skip-variance-check`, no `|| true`.
+
+[PRE_GATE]
+neb release --help | grep -q bisect && grep -q -- '--hold-file' scripts/build-novos.sh && grep -q 'M6_INSTALLED_CHECKS' scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. New `scripts/release-candidate.sh` (run by the user with sudo; refuses without root and refuses when invoked by an agent, same check as nebulous-ctl's host-only commands):
+   a. `neb release holds --format hold-file > <run>/holds.toml`; fresh `build-novos.sh --target-iso <run>/candidate.iso --hold-file <run>/holds.toml`; `neb release candidate --iso` and `record-phase build`.
+   b. `test-docker-qemu.py --tier live-boot`, then `--tier install-e2e --groups dev,network`; `record-phase` after each with its log.
+   c. All pass → `neb release promote --iso <run>/candidate.iso`; print the release record path.
+   d. A confirmed failure (re-run once on identical inputs) with more than one changed component → `neb release bisect start`, then loop: hold file from `bisect next` → fresh build + the same phases → `bisect record pass|fail`, until neb reports culprit, interaction or cap. Then re-run the candidate minus the culprit through a, b, c.
+   e. Every run writes `logs/release-candidate-<UTC>/` (per-round build log, VM artifacts, holds, neb JSON) and ends with a one-screen summary: promoted / culprit (component, version, phase) / interaction set / cap reached.
+2. Fresh Stage 1–6 build every round; no partial resumes.
+
+[POST_GATE]
+bash -n scripts/release-candidate.sh && grep -q 'neb release promote' scripts/release-candidate.sh && grep -q 'neb release bisect' scripts/release-candidate.sh && grep -q -- '--hold-file' scripts/release-candidate.sh && ! grep -nE -- '--from-stage|--skip-variance-check|\|\| true' scripts/release-candidate.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER RUN: `sudo ./scripts/release-candidate.sh`; logs in logs/release-candidate-<UTC>/.
 ```
 
 ---
