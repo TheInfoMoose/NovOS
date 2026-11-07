@@ -1109,18 +1109,22 @@ install_gaming_profile() {
 }
 
 # Installs a profile's `source: custom-tool` manifest entries (e.g. zig) through novos-custom-tools --tool.
-# Each entry is a pinned online download, so a failure is fatal; post-Calamares (offline) skips them.
+# Each entry is a pinned online download. A failure is fatal, except post-Calamares, where it warns
+# with a retry command and continues so the install itself still completes.
 install_manifest_custom_tools() {
     local profile="$1"
     local name
-    if [[ "$POST_CALAMARES" == "true" ]]; then
-        echo "==> [Profile: ${profile}] Post-Calamares offline mode: skipping online custom-tool downloads."
-        return 0
-    fi
     load_manifest_pkgs "$profile" custom-tool
     for name in "${MANIFEST_PKGS[@]}"; do
         echo "==> [Profile: ${profile}] Installing custom tool '${name}' via novos-custom-tools --tool..."
-        /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"
+        if [[ "$POST_CALAMARES" == "true" ]]; then
+            if ! /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"; then
+                echo "[WARN] [Profile: ${profile}] custom tool '${name}' failed to install; retry with: sudo novos-setup --install ${profile}" >&2
+                continue
+            fi
+        else
+            /usr/local/bin/novos-custom-tools --manifest /etc/novos/custom-tools.yaml --tool "$name"
+        fi
     done
 }
 
@@ -1229,6 +1233,7 @@ run_post_calamares() {
         verify_profile_deps gaming
     fi
     if any_pkg_installed docker-ce podman buildah skopeo distrobox qemu-system-x86 libvirt-daemon-system virt-manager code antigravity neovim hx; then
+        install_manifest_custom_tools dev
         configure_dev_runtime
         verify_profile_deps dev
     fi
