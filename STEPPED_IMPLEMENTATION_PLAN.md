@@ -93,7 +93,7 @@
 * **Before 11A:** Approve the proposed base admin/storage set listed in Step 11A (add/remove freely).
 * **Before 11B:** Confirm preseeding the Steam license debconf answer at build time is acceptable for a shared distro (alternative: user accepts on first launch).
 * **Decided 2026-11-06 (9G–9J):** the first build after 9E failed at Stage 5.1d on `zig`, `ghostty` and `tailscale` (none are in sid or the configured repos; zig and ghostty had been faked by `0.0.1~novos1` marker debs until 9D). The user chose: tailscale → official signed apt repo; zig → official ziglang.org tarball, pinned version + sha256, through `novos-custom-tools`; ghostty → removed from the image (alacritty stays). No further approval needed for these three.
-* **Before 9I:** zig and ghostty leave the generated Calamares `netinstall.yaml` (the renderer emits apt/novos-meta only). zig still reaches the image through the dev profile (9J). Confirm that is acceptable, or say if zig must stay visible in the installer's package list.
+* **Before 9I:** zig and ghostty leave the generated Calamares `netinstall.yaml` (the renderer emits apt/novos-meta only). zig still reaches the image through the dev profile (9J). Confirm that is acceptable, or say if zig must stay visible in the installer's package list. **Accepted by the user.** Correction found in 9J: `config/build.env` sets `BUILD_PROFILES="none"`, so the dev profile never runs at build time, and post-Calamares skipped online downloads, so zig reached no installed system. **Decided 2026-11-06:** post-Calamares downloads custom-tool entries when it detects the dev group; a failed download warns and continues (STEP 9K).
 * **Before 14A:** `docs/PROFILES.md` still lists `ghostty` and apt `zig`; fold that into the docs refresh.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
 
@@ -126,6 +126,7 @@
 | **STEP 9H** | **COMPLETED** | `/boost` | `tarball` custom-tool type (pinned sha256) + zig entry | `crates/novos-custom-tools/src/main.rs`, `custom-tools/manifest.yaml` |
 | **STEP 9I** | **COMPLETED** | `/goal` | `custom-tool` manifest source; zig moved off apt; ghostty removed | `crates/novos-custom-tools/src/packages.rs`, `config/packages.yaml`, `calamares/modules/netinstall.yaml` |
 | **STEP 9J** | **COMPLETED** | `/goal` | Dev profile installs `custom-tool` entries (zig) | `scripts/stages/05-profiles-installer.sh` |
+| **STEP 9K** | PLANNED | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online **[USER BUILD]** | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
 | **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
 | **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
@@ -923,6 +924,41 @@ bash -n scripts/stages/05-profiles-installer.sh && grep -q 'install_manifest_cus
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.1d must pass with tailscale resolving) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars`; logs to logs/.
+```
+
+---
+
+### STEP 9K: Post-Calamares Installs Dev `custom-tool` Entries
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 9K: When post-Calamares detects the dev group, download its custom-tool entries (zig); a failure warns and continues
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/05-profiles-installer.sh
+READ_ONLY_REFS:
+  - config/build.env (BUILD_PROFILES="none")
+  - calamares/modules/shellprocess-novos.conf (runs `novos-setup --post-calamares` after netinstall, which already needs network)
+  - Open Questions: "Before 9I" (user decision 2026-11-06)
+  - CLAUDE.md §6 (no `|| true` without `# novos-allow:`)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES.
+
+[PRE_GATE]
+grep -q '^install_manifest_custom_tools()' scripts/stages/05-profiles-installer.sh && grep -q 'skipping online custom-tool downloads' scripts/stages/05-profiles-installer.sh && grep -q '^run_post_calamares()' scripts/stages/05-profiles-installer.sh
+
+[MUTATION_SPEC]
+1. install_manifest_custom_tools: remove the POST_CALAMARES early return. In post-Calamares mode run each `--tool "$name"` inside `if ! ...; then` and on failure print `[WARN] [Profile: <profile>] custom tool '<name>' failed to install; retry with: sudo novos-setup --install <profile>` and continue with the next entry (no `|| true`). In every other mode a failure stays fatal. If the 9F failure recorder (`/var/log/novos/package-failures.tsv`) exists by then, append `profile<TAB>name<TAB>custom-tool install failed`.
+2. run_post_calamares, dev branch (the `any_pkg_installed docker-ce podman ...` block): call `install_manifest_custom_tools dev` before `configure_dev_runtime`.
+
+[POST_GATE]
+bash -n scripts/stages/05-profiles-installer.sh && test "$(grep -c 'install_manifest_custom_tools dev' scripts/stages/05-profiles-installer.sh)" -ge 2 && ! grep -n 'skipping online custom-tool downloads' scripts/stages/05-profiles-installer.sh && grep -q 'retry with: sudo novos-setup --install' scripts/stages/05-profiles-installer.sh && ! git diff -U0 scripts/stages/05-profiles-installer.sh | grep -E '^\+' | grep '|| true'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso` (Stage 5.1d must pass) + `./scripts/test-qemu.sh --iso ./build/NovOS-sid-amd64.iso --reset-vars` with a Calamares install that selects the dev group (`zig version` must work); logs to logs/.
 ```
 
 ---
