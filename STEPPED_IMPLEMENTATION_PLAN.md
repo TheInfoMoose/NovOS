@@ -110,6 +110,8 @@
 * **Found 2026-11-08 (ppp drop):** the 15J verification build failed the install-e2e variance lock: `ppp` (golden 2.5.2-1+2) and `libpcap0.8t64` (golden 1.11.0-1) were missing from the live OS. Neither is declared anywhere; `ppp` came only as a Recommends of `network-manager` in the Stage 3.2 install (`03-core-system.sh:62-67`), and `libpcap0.8t64` only as a dependency of `ppp`. Sid published `ppp` 2.5.5-1+1 at 2026-11-08 14:41 UTC (snapshot.debian.org first_seen); Stage 3 ran at 16:46 UTC and installed every other `network-manager` Recommends but not `ppp`. apt skips an uninstallable Recommends silently, so the mid-transition gap was invisible to the build. Fix: declare `ppp` explicitly (STEP 15K), so an uninstallable `ppp` fails Stage 3 and Stage 5 `check-apt` instead of dropping. `libpcap0.8t64` stays undeclared (a library pulled by `ppp`'s Depends). 15K's fresh build also completes 15J's pending verification.
 * **Found 2026-11-08 (ppp conflict, after 15K):** the next fresh build failed Stage 3.2 as 15K intended: sid `network-manager` 1.58.1-1 declares `Breaks: ppp (>= 2.5.2-2~), ppp (<< 2.5.2-1+~)` (its ppp plugin is ABI-tied), and sid's only `ppp` is now 2.5.5-1+1. That Breaks is why the earlier build dropped the Recommends. **Decided 2026-11-08: pin `ppp` to the golden 2.5.2-1+2** from snapshot.debian.org `20261107T205437Z` (the last snapshot before the 2.5.5 upload; verified to carry ppp 2.5.2-1+2, network-manager 1.58.1-1 and libpcap0.8t64 1.11.0-1), for that one package only (STEP 15L). The pin is build-time only: the image ships no snapshot source. Remove it (clear `NOVOS_PINNED_PACKAGES`) once sid's `network-manager` accepts sid's `ppp`; each build prints the sid candidate so the gap stays visible. 12A/12B later generalise this.
 * **Found 2026-11-08 (stale manifest counts):** after 10B, `verify-deps.sh --self-test` fails in `cargo test --workspace`: `crates/novos-custom-tools/src/packages.rs:1391` `real_manifest_loads_and_validates` asserts `entries == 286` / `unique_packages == 256`, but 15K's `ppp` entry made the real manifest 287 / 257 (`packages validate` reports both). 15K's POST_GATE ran `packages validate`, not `cargo test`, so the Rust gate has been red since 545983a. Fixed by STEP 15M.
+* **Decided 2026-11-08 (automation readiness):** for the unattended release pipeline (15D + `neb release` + containerized QEMU/LLM checks), three gaps are closed before 15D: (1) the step lock is owned by the session that set it, and automated event prompts never clear it (16A); a step-lock-free edit of `config/suppression-baseline.toml` is allowed only when every count decreases (16B); (2) a `# novos-allow:` line counts as approved only with a matching entry in the user-only `config/novos-allow-approved.toml` (16C; CLAUDE.md in 16D); agents and automation may propose entries, never write them; (3) pipeline failures are classified infra / component / unknown before anything reaches the failure ledger (15N); infra failures retry with backoff and are never recorded as a component hold; unknown stops for the user (13A and 15D amended). Containerized agents run in their own checkout, so each has its own `.claude/state`.
+* **Decided 2026-11-08 (10F teardown exceptions):** the user approved ("Approve all five") the five `# novos-allow: best-effort teardown` lines added by 10F: `scripts/build-novos.sh:89,90,92` (cleanup(): `mount --make-rslave`, `umount -R` chain, `udevadm settle`) and `scripts/stages/06-snapshot-finalize.sh:63,67` (restore_target_state fstab/greetd backup restore). After 16C they become the first entries the user writes into `config/novos-allow-approved.toml`.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -124,20 +126,24 @@
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
-| 2 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
-| 3 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
-| 4 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
-| 5 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
-| 6 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
-| 7 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
-| 8 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
-| 9 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
-| 10 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
-| 11 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
-| 12 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
-| 13 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
-| 14 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+| 1 | **STEP 16A** | `/goal` | Step lock owned by its session; automated event prompts keep it | `.claude/hooks/step-lock.sh`, `.claude/hooks/test-guards.sh` | — |
+| 2 | **STEP 16B** | `/goal` | Decrease-only baseline edits allowed without a step lock | `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | — |
+| 3 | **STEP 16C** | `/boost` | `novos-allow` approval registry (user-only file) | `scripts/lib/verify-deps.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **[USER]** writes `config/novos-allow-approved.toml` after (approves the current `novos-allow` lines). |
+| 4 | **STEP 16D** | `/goal` | CLAUDE.md: lock ownership, decrease-only baseline, approval registry | `CLAUDE.md` | — |
+| 5 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 6 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 7 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 8 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 9 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 10 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 11 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 12 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 13 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 14 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 15 | **STEP 15N** | `/goal` | Pipeline failure classifier: infra / component / unknown | `scripts/lib/classify-failure.py` | — |
+| 16 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 17 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 18 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
 
 Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
 
@@ -187,6 +193,7 @@ Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile
 | **STEP 10C** | COMPLETED **[USER BUILD] pending** (Stage 3 suppressions 22 → 0, no novos-allow) | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
 | **STEP 10D** | COMPLETED **[USER BUILD] pending** (Stage 4 suppressions 31 → 0, no novos-allow) | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` |
 | **STEP 10E** | COMPLETED **[USER BUILD] pending** (Stage 5 suppressions 70 → 0, forbidden 1 → 0, no novos-allow; install-time failures via run_or_record → 9F TSV; verifier PASS) | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` |
+| **STEP 10F** | COMPLETED **[USER BUILD] pending** (Stage 2 3→0, Stage 6 12→0, build-novos.sh 9→0, shellprocess-novos.conf 2→0; 5 user-approved best-effort-teardown novos-allow) | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh`, `calamares/modules/shellprocess-novos.conf` (+ baseline) |
 | **STEP 15M** | COMPLETED (POST_GATE 0: fmt, clippy, cargo test, verify-deps --self-test) | `/goal` | Update stale manifest counts in the packages.rs real-manifest test (287 entries / 257 unique after 15K's ppp) | `crates/novos-custom-tools/src/packages.rs` |
 
 ---
@@ -1281,16 +1288,19 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 ```text
 [STEP_ID]
-STEP 10F: Replace or justify suppressions in 02-bootstrap-chroot.sh, 06-snapshot-finalize.sh, build-novos.sh
+STEP 10F: Replace or justify suppressions in 02-bootstrap-chroot.sh, 06-snapshot-finalize.sh, build-novos.sh; drop the redundant suppressed commands in calamares/modules/shellprocess-novos.conf (amended 2026-11-08)
 
 [SCOPE_LOCK]
 ALLOWED_FILES:
   - scripts/stages/02-bootstrap-chroot.sh
   - scripts/stages/06-snapshot-finalize.sh
   - scripts/build-novos.sh
-  - config/suppression-baseline.toml (baseline counter for the three files above)
+  - calamares/modules/shellprocess-novos.conf
+  - config/suppression-baseline.toml (baseline counters for the four files above)
 READ_ONLY_REFS:
   - scripts/lib/verify-deps.sh
+  - scripts/stages/05-profiles-installer.sh (novos-setup --post-calamares: devuser removal + /srv chown via run_or_record, 10E)
+  - scripts/stages/04-cosmic-desktop.sh (build-time chown of /var/lib/cosmic-greeter, /var/cache/tuigreet)
 FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES. cleanup() trap teardown may keep annotated suppressions.
 
@@ -1299,13 +1309,152 @@ bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet'
 
 [MUTATION_SPEC]
 1. Same rules as 10C. Teardown in cleanup()/unmount paths: annotate `# novos-allow: best-effort teardown`.
-2. Lower the three baselines (target 0 unannotated).
+2. shellprocess-novos.conf (amended 2026-11-08): the `userdel -r -f devuser … || true; groupdel … || true; rm -rf …; chown -R … /srv/llm /srv/devshare … || true` command duplicates `novos-setup --post-calamares` (10E: guarded removal and chown recorded via run_or_record), and the `chown -R cosmic-greeter … /var/lib/cosmic-greeter /var/cache/tuigreet … || true` command duplicates Stage 4's build-time chown (unpackfs preserves ownership). Remove each command whose every action the referenced code already performs; any action not covered (e.g. an AccountsService path novos-setup does not remove) moves into a plain command without suppression, or is reported for 10F's report. A failing Calamares shellprocess command aborts the install, so nothing left there may be able to fail in the normal case.
+3. Lower the four baselines (target 0 unannotated).
 
 [POST_GATE]
-for f in scripts/stages/02-bootstrap-chroot.sh scripts/stages/06-snapshot-finalize.sh scripts/build-novos.sh; do bash -n "$f" || exit 1; test "$(grep -E '\|\| (true|:)' "$f" | grep -vc 'novos-allow:')" -eq 0 || exit 1; done && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet'
+test "$(grep -E '\|\| (true|:)' calamares/modules/shellprocess-novos.conf | grep -vc 'novos-allow:')" -eq 0 && python3 -c 'import yaml;yaml.safe_load(open("calamares/modules/shellprocess-novos.conf"))' && for f in scripts/stages/02-bootstrap-chroot.sh scripts/stages/06-snapshot-finalize.sh scripts/build-novos.sh; do bash -n "$f" || exit 1; test "$(grep -E '\|\| (true|:)' "$f" | grep -vc 'novos-allow:')" -eq 0 || exit 1; done && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet'
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD (fresh 1–6 + QEMU install); errors previously masked are expected to surface.
+```
+
+---
+
+### STEP 16A: Step Lock Owned by Its Session
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 16A: step-lock.sh records which session set the active step; only a prompt from that session can clear it, and automated event prompts (side-session, task, cross-session, CI events) never change it
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - .claude/hooks/step-lock.sh
+  - .claude/hooks/test-guards.sh
+READ_ONLY_REFS:
+  - .claude/hooks/guard-edit.sh, .claude/hooks/guard-bash.sh, .claude/hooks/guard-diff.sh (read `.claude/state/active-step`; unchanged)
+  - Open Questions: "Decided 2026-11-08 (automation readiness)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. The model still cannot set a step: only a user prompt's first line does. `.claude/state/active-step` keeps its one-line format, so the three readers stay unchanged.
+
+[PRE_GATE]
+grep -q 'rm -f "${STATE_DIR}/active-step"' .claude/hooks/step-lock.sh && bash .claude/hooks/test-guards.sh > /dev/null 2>&1
+
+[MUTATION_SPEC]
+1. step-lock.sh reads `.session_id` from the hook input (empty when absent). On `plan` / `step`: also write the session id to `${STATE_DIR}/active-step.owner`.
+2. New mode `event`: the prompt's first line starts with `<side-sessions-event`, `<task-notification`, `<cross-session-message` or `<ci-monitor-event` → treated like `keep` (active step and owner unchanged; allow_vm_test rewritten to 0).
+3. `clear`: remove active-step and active-step.owner only when the owner file is absent or equals this prompt's session id; otherwise leave both and emit context "NovOS step-lock: STEP <ID> stays active (owned by another session)".
+4. test-guards.sh: cases for (a) set + clear by the same session, (b) clear attempt from another session keeps the step, (c) each event prefix keeps the step, (d) event prefix never sets a step even when followed by "/goal STEP 9Z", (e) missing session_id behaves as before.
+
+[POST_GATE]
+bash -n .claude/hooks/step-lock.sh && bash .claude/hooks/test-guards.sh && grep -q 'active-step.owner' .claude/hooks/step-lock.sh && grep -q 'side-sessions-event' .claude/hooks/step-lock.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 16B: Decrease-Only Baseline Edits Without a Step Lock
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 16B: guard-edit.sh allows an Edit/Write of config/suppression-baseline.toml outside a listing step only when the result keeps the same tables and keys and every count is a non-negative integer no higher than before
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - .claude/hooks/guard-edit.sh
+  - .claude/hooks/test-guards.sh
+READ_ONLY_REFS:
+  - config/suppression-baseline.toml, scripts/lib/verify-deps.sh (check_suppression_ratchet, check_forbidden_patterns)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Increases, new keys, removed keys or tables, and shell (guard-bash) writes stay blocked outside a listing step. No other conditionally protected file gains this path.
+
+[PRE_GATE]
+grep -q 'config/suppression-baseline.toml|config/app-health.toml' .claude/hooks/guard-edit.sh && bash .claude/hooks/test-guards.sh > /dev/null 2>&1
+
+[MUTATION_SPEC]
+1. guard-edit.sh, before blocking a conditional path for config/suppression-baseline.toml: build the proposed content (Write: `tool_input.content`; Edit: apply `old_string` → `new_string` to the current file, honouring `replace_all`; `old_string` not found → block) and compare it with the current file in `python3 -I` (tomllib). Allow only if both parse, the table and key sets are identical, every value is an int ≥ 0, and every value ≤ its current value. Otherwise block with the first offending table/key.
+2. test-guards.sh: decrease allowed (Edit and Write), equal allowed, increase blocked, new key blocked, removed key blocked, non-integer blocked, unparsable blocked, missing old_string blocked; a listing active step still allows any edit.
+
+[POST_GATE]
+bash -n .claude/hooks/guard-edit.sh && bash .claude/hooks/test-guards.sh && grep -q 'tomllib' .claude/hooks/guard-edit.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 16C: `novos-allow` Approval Registry
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 16C: an annotated suppression (a line matching the 10B suppression rule that carries `# novos-allow:`) counts as approved only when the user-only config/novos-allow-approved.toml has an entry for it (file + sha256 of the stripped line); unapproved annotated lines fail the pre-build check
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/lib/verify-deps.sh
+  - .claude/hooks/guard-edit.sh
+  - .claude/hooks/test-guards.sh
+READ_ONLY_REFS:
+  - config/suppression-baseline.toml (scan set), CLAUDE.md §6
+  - Open Questions: "Decided 2026-11-08 (automation readiness)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Agents never create or edit config/novos-allow-approved.toml (the user writes it). No existing novos-allow line is removed or reworded.
+
+[PRE_GATE]
+grep -q 'check_suppression_ratchet' scripts/lib/verify-deps.sh && test ! -e config/novos-allow-approved.toml && grep -q 'STEP 10F\*\* | COMPLETED' STEPPED_IMPLEMENTATION_PLAN.md
+
+[MUTATION_SPEC]
+1. verify-deps.sh: `check_allow_registry` scans the same file set as the ratchet. Every annotated suppression (the 10B suppression regex plus `# novos-allow:` on the same line; comments or strings that merely mention the marker do not count) needs a `[[allow]]` entry (`file`, `line_sha256` = sha256 of the line with leading/trailing whitespace removed, `reason`) in config/novos-allow-approved.toml; a missing file means no approvals. Failure prints each unapproved line as file:line plus a ready-to-paste entry. An entry matching no line prints a `[STALE]` warning (not a failure). `--print-allow-entries` prints entries for every annotated suppression, for the user to review. The check runs in run_self_test and verify_host_deps; the shared scanner/regex from 10B is reused.
+2. guard-edit.sh: add `config/novos-allow-approved.toml` to ALWAYS_PROTECTED (guard-bash file-write checks reuse the list, if they do today; otherwise report).
+3. test-guards.sh: Edit/Write of config/novos-allow-approved.toml is blocked in every mode, including an active step that lists it.
+
+[POST_GATE]
+bash -n scripts/lib/verify-deps.sh && bash .claude/hooks/test-guards.sh && grep -q 'novos-allow-approved.toml' .claude/hooks/guard-edit.sh && ! bash -c 'source scripts/lib/verify-deps.sh && check_allow_registry' > /dev/null 2>&1 && test "$(./scripts/lib/verify-deps.sh --print-allow-entries | grep -c 'line_sha256')" -eq 5
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status, including every annotated suppression `--print-allow-entries` lists (5 expected after 10F: build-novos.sh cleanup() ×3, 06-snapshot-finalize.sh restore_target_state ×2; a different count means the tree changed: report it, do not adjust the gate). Request USER ACTION: review `./scripts/lib/verify-deps.sh --print-allow-entries` and write the approved entries to config/novos-allow-approved.toml yourself; until then `verify-deps.sh --self-test` and the pre-build check fail by design.
+```
+
+---
+
+### STEP 16D: CLAUDE.md Documents Lock Ownership, Decrease-Only Baseline and the Approval Registry
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 16D: CLAUDE.md §4 and §6 and the Parity Table describe 16A–16C
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - CLAUDE.md
+READ_ONLY_REFS:
+  - .claude/hooks/step-lock.sh, .claude/hooks/guard-edit.sh, scripts/lib/verify-deps.sh (as changed by 16A–16C)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No rule is weakened or dropped; only the three mechanisms are described.
+
+[PRE_GATE]
+grep -q 'active-step.owner' .claude/hooks/step-lock.sh && grep -q 'tomllib' .claude/hooks/guard-edit.sh && grep -q 'novos-allow-approved.toml' .claude/hooks/guard-edit.sh
+
+[MUTATION_SPEC]
+1. §4 Scope lock: the active step belongs to the session whose prompt set it; other sessions' prompts and automated event prompts cannot clear it; containerized agents use their own checkout and state.
+2. §6: a `# novos-allow:` is approved only by an entry the user writes in `config/novos-allow-approved.toml` (always protected; agents propose entries via `verify-deps.sh --print-allow-entries`); config/suppression-baseline.toml may be lowered without a step lock (decrease-only, enforced by guard-edit).
+3. Protected-files list: add `config/novos-allow-approved.toml` to "always". Parity Table: update the §5 Scope lock and suppression rows to name 16A–16C.
+
+[POST_GATE]
+grep -q 'novos-allow-approved.toml' CLAUDE.md && grep -q 'active-step.owner\|owned by the session' CLAUDE.md && grep -qi 'decrease-only' CLAUDE.md
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
 ```
 
 ---
@@ -1583,14 +1732,14 @@ test -f scripts/nebulous-ctl.py && test -f /srv/devshare/Nebulous/Cargo.toml
 4. "Candidate lifecycle" section (user policy 2026-11-07):
    a. Component identity: Debian source package (dpkg `Source:`, else package name); a kernel line is its meta package (e.g. `linux-xanmod-x64v3`) plus its ABI-named image/headers. A renamed ABI package (linux-image-7.2.15-… → linux-image-7.3.3-…) is an upgrade, not a removal. A removal is a component absent from the new ISO; it and any downgrade still need user `approve-variance`.
    b. `neb release candidate --iso <iso>`: every component whose version is newer than golden, or new, is automatically approved for testing. Output: the changed set and the holds in force.
-   c. Failure ledger `.tracker/release/failures.toml`: (component, version, phase, log path, UTC time). A version in the ledger is held at last-good on later builds; a newer version of that component is eligible again automatically. `neb release holds [--all-last-good] [--format hold-file]` emits the hold file consumed by build-novos.sh `--hold-file` (12B).
+   c. Failure ledger `.tracker/release/failures.toml`: (component, version, phase, class, log path, UTC time). Amended 2026-11-08: `class` comes from `scripts/lib/classify-failure.py` (15N); `record-failure` accepts only `class = "component"` (infra and unknown failures never create a hold). A version in the ledger is held at last-good on later builds; a newer version of that component is eligible again automatically. `neb release holds [--all-last-good] [--format hold-file]` emits the hold file consumed by build-novos.sh `--hold-file` (12B).
    d. Phases in order: `build`, `vm-live-boot`, `vm-install-e2e` (scripts/test-docker-qemu.py tiers). `neb release record-phase <phase> pass|fail --log <path>`. A failure is re-run once on identical inputs before it counts (flake guard).
    e. `neb release promote --iso <iso>`: only when all three phases passed for that candidate; atomically writes golden.toml, `releases/<version>-<UTC>.toml` (snapshot, iso sha256, golden sha256, component versions, third-party cache paths) and clears resolved holds. No tty requirement: automation promotes. bless-golden, approve-variance and unlock-loop stay user-only (tty).
    f. `neb release bisect start|next|record pass|fail`: on a confirmed failure with N>1 changed components, deterministic halving (kernel line counts as one component); each round emits a hold file for a fresh build. Ends when one component remains → `record-failure` on that (component, version), then the candidate minus the culprit is re-run through all phases and promoted if it passes. Both halves pass while the whole fails → record an "interaction" failure on the set, hold it, stop and report. Both halves fail → bisect each. Hard cap of 2·ceil(log2 N)+2 rounds, then stop and report. State in `.tracker/release/bisect.toml`.
    g. Exit codes and JSON for every new command; a candidate never blocks on an upgrade unless the ledger holds that exact version.
 
 [POST_GATE]
-for c in extract-golden verify-variance record-attempt check-guardrail bless-golden approve-variance unlock-loop pins-from-release candidate record-phase promote bisect holds record-failure failures.toml 'Candidate lifecycle'; do grep -q -- "$c" docs/NEB_RELEASE_CONTRACT.md || exit 1; done
+for c in extract-golden verify-variance record-attempt check-guardrail bless-golden approve-variance unlock-loop pins-from-release candidate record-phase promote bisect holds record-failure failures.toml 'Candidate lifecycle' classify-failure; do grep -q -- "$c" docs/NEB_RELEASE_CONTRACT.md || exit 1; done
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
@@ -2137,6 +2286,44 @@ Halt immediately after POST_GATE exits 0 and report verification status. Request
 
 ---
 
+### STEP 15N: Pipeline Failure Classifier
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15N: scripts/lib/classify-failure.py classifies a failed build or VM phase as infra, component or unknown from its logs, so infrastructure outages never reach the failure ledger
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/lib/classify-failure.py
+READ_ONLY_REFS:
+  - scripts/build-novos.sh, scripts/stages/*.sh ([FATAL] messages), scripts/test-docker-qemu.py (last-test-verdict.json fields, milestone ids)
+  - logs/ (real failure logs for fixtures, read only)
+  - Open Questions: "Decided 2026-11-08 (automation readiness)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No network access; the classifier only reads files. No third-party Python modules.
+
+[PRE_GATE]
+test ! -e scripts/lib/classify-failure.py && test -f scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. CLI: `classify-failure.py --log PATH [--log PATH ...] [--verdict last-test-verdict.json] [--self-test]`; runs under `python3 -I`. Output one JSON object: `class` (infra|component|unknown), `rule` (rule id), `file`, `line`, `excerpt`. Exit 0 when classified (any class), 2 on unreadable input.
+2. Ordered rules, first match wins, scanning from the last error backwards:
+   a. infra: DNS (`Temporary failure resolving`, `Could not resolve host`), connection (`Connection timed out`, `Connection refused`, `Network is unreachable`), HTTP 5xx / 429 in apt/curl/flatpak/snapshot.debian.org fetches, `Hash Sum mismatch` / `File has unexpected size` (mirror sync), curl exit 6/7/28/35/56, disk full on the build host (`No space left on device`), KVM/QEMU host failures (`/dev/kvm` missing, `Could not access KVM`).
+   b. component: apt dependency errors (`Unable to satisfy dependencies`, `Breaks:`, `unmet dependencies`), `Unable to locate package` when apt lists were fetched without error, dpkg maintainer-script failures, `[FATAL]` lines from the stage scripts that are not infra, the variance lock (`golden_package_removed`, `HARD_STOP_VARIANCE_LOCK`), harness milestone failures in the verdict (M1–M7) whose detail has no infra match.
+   c. otherwise unknown.
+3. `--self-test`: embedded fixtures, at least one per rule plus the 2026-11-08 ppp Breaks failure (component) and a DNS failure during netinstall (infra); exits non-zero on any mismatch.
+
+[POST_GATE]
+python3 -m py_compile scripts/lib/classify-failure.py && python3 -I scripts/lib/classify-failure.py --self-test && ! grep -nE '^\s*(import|from)\s+(requests|yaml|urllib3)' scripts/lib/classify-failure.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
 ### STEP 15D: `release-candidate.sh` Pipeline
 
 * **Recommended Command:** `/boost`
@@ -2152,6 +2339,7 @@ READ_ONLY_REFS:
   - docs/NEB_RELEASE_CONTRACT.md ("Candidate lifecycle")
   - scripts/build-novos.sh (--hold-file), scripts/test-docker-qemu.py (tiers, --groups)
   - CLAUDE.md §1, §2, §5 (fresh builds only; the user runs it)
+  - scripts/lib/classify-failure.py (15N; amended 2026-11-08)
 FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES. No `--from-stage`, no `--skip-variance-check`, no `|| true`.
 
@@ -2165,10 +2353,11 @@ neb release --help | grep -q bisect && grep -q -- '--hold-file' scripts/build-no
    c. All pass → `neb release promote --iso <run>/candidate.iso`; print the release record path.
    d. A confirmed failure (re-run once on identical inputs) with more than one changed component → `neb release bisect start`, then loop: hold file from `bisect next` → fresh build + the same phases → `bisect record pass|fail`, until neb reports culprit, interaction or cap. Then re-run the candidate minus the culprit through a, b, c.
    e. Every run writes `logs/release-candidate-<UTC>/` (per-round build log, VM artifacts, holds, neb JSON) and ends with a one-screen summary: promoted / culprit (component, version, phase) / interaction set / cap reached.
+   f. Amended 2026-11-08 (automation readiness): every failed phase is classified with `scripts/lib/classify-failure.py --log <phase log>... [--verdict <last-test-verdict.json>]` before any `record-phase fail`, `bisect record fail` or ledger write. `infra` → no ledger entry and no hold; re-run the same phase on identical inputs after 5, 15 and 45 minutes, then stop and report "infra" with the evidence line. `unknown` → stop and report for the user, no ledger entry. `component` → the existing path (flake re-run, then record). The class and evidence go into the run summary.
 2. Fresh Stage 1–6 build every round; no partial resumes.
 
 [POST_GATE]
-bash -n scripts/release-candidate.sh && grep -q 'neb release promote' scripts/release-candidate.sh && grep -q 'neb release bisect' scripts/release-candidate.sh && grep -q -- '--hold-file' scripts/release-candidate.sh && ! grep -nE -- '--from-stage|--skip-variance-check|\|\| true' scripts/release-candidate.sh
+bash -n scripts/release-candidate.sh && grep -q 'neb release promote' scripts/release-candidate.sh && grep -q 'neb release bisect' scripts/release-candidate.sh && grep -q -- '--hold-file' scripts/release-candidate.sh && grep -q 'classify-failure.py' scripts/release-candidate.sh && ! grep -nE -- '--from-stage|--skip-variance-check|\|\| true' scripts/release-candidate.sh
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER RUN: `sudo ./scripts/release-candidate.sh`; logs in logs/release-candidate-<UTC>/.
