@@ -146,6 +146,7 @@ ensure_host_rust_binaries
 mkdir -p "$(dirname "$ISO_PATH")"
 echo "==> Purging stale build artifacts prior to build..."
 rm -f "$ISO_PATH" \
+      "${ISO_PATH%.iso}.REJECTED.iso" \
       "${REPO_ROOT}/build/NovOS-sid-amd64.iso" \
       "${REPO_ROOT}/build/novos.img" \
       "${REPO_ROOT}/build/novos-calamares-target.img" \
@@ -200,8 +201,59 @@ if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
     chown "${SUDO_UID}:${SUDO_GID}" "$(dirname "$ISO_PATH")" "$ISO_PATH" 2>/dev/null || true
 fi
 
+# 4. ISO Variance Lock (always runs; no skip path). Any package/binary drop or downgrade against
+#    .nebulous/golden-snapshot.toml rejects the ISO. Upgrades are reported, never failures.
+print_variance_report() {
+    python3 -I - "$1" << 'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    report = json.load(fh)
+print(f"==> Variance lock: {report['status']} (violations={len(report['violations'])}, "
+      f"upgrades={report['upgraded_count']}, packages={report['checked_packages_count']}, "
+      f"binaries={report['checked_binaries_count']})")
+for u in report["upgrades"]:
+    print(f"  [UPGRADE] {u['item']}: {u['from_version']} -> {u['to_version']}")
+for v in report["violations"]:
+    print(f"  [VIOLATION] {v['type']} ({v['item']}): {v['detail']}")
+PY
+}
+
+VARIANCE_REPORT="${REPO_ROOT}/logs/variance-$(date -u +%Y%m%dT%H%M%SZ).json"
+mkdir -p "${REPO_ROOT}/logs"
+variance_run_as=()
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    variance_run_as=(runuser -u "${SUDO_USER}" --)
+fi
+echo "==> Running ISO variance lock against golden snapshot (report: ${VARIANCE_REPORT})..."
+variance_rc=0
+if "${variance_run_as[@]}" python3 "${SCRIPT_DIR}/nebulous-ctl.py" verify-variance --iso "$ISO_PATH" --json > "$VARIANCE_REPORT"; then
+    variance_rc=0
+else
+    variance_rc=$?
+fi
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+    chown "${SUDO_UID}:${SUDO_GID}" "$VARIANCE_REPORT"
+fi
+if [[ "$variance_rc" -ne 0 ]]; then
+    REJECTED_ISO_PATH="${ISO_PATH%.iso}.REJECTED.iso"
+    if [[ -f "$ISO_PATH" ]]; then
+        mv -f "$ISO_PATH" "$REJECTED_ISO_PATH"
+    fi
+    echo "[FATAL] ISO variance lock failed (exit ${variance_rc}); a package or binary was dropped or downgraded against the golden snapshot." >&2
+    if ! print_variance_report "$VARIANCE_REPORT" >&2; then
+        echo "[FATAL] Variance report ${VARIANCE_REPORT} is not a valid JSON report; see verify-variance stderr above." >&2
+    fi
+    echo "[FATAL] ISO rejected: ${REJECTED_ISO_PATH}" >&2
+    echo "[FATAL] Report: ${VARIANCE_REPORT}" >&2
+    echo "[FATAL] Intended drops/downgrades are accepted only by the user: ./scripts/nebulous-ctl.py approve-variance --item-name <pkg> --reason <why> (or bless-golden)." >&2
+    exit "$variance_rc"
+fi
+print_variance_report "$VARIANCE_REPORT"
+
 echo "=================================================================="
 echo " NovOS Clean-Room Build Complete!"
 echo " Live + Installer ISO: ${ISO_PATH}"
+echo " Variance report: ${VARIANCE_REPORT}"
+echo " To accept intended changes run: ./scripts/nebulous-ctl.py approve-variance --item-name <pkg> --reason <why> / bless-golden --iso ${ISO_PATH} (user only)"
 echo " Test in QEMU with: ./scripts/test-qemu.sh --iso ${ISO_PATH} --reset-vars"
 echo "=================================================================="
