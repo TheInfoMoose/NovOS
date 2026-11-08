@@ -81,9 +81,10 @@ esac
 echo "==> [Stage 5.1c] Building Offline APT Repository (/usr/share/novos/apt-markers) for the novos-profile-wifi / novos-profile-bluetooth Meta Packages..."
 MARKER_REPO="/usr/share/novos/apt-markers"
 MARKER_BUILD_TMP="$(mktemp -d)"
-rm -f /etc/apt/sources.list.d/novos-markers.list /var/lib/apt/lists/*apt-markers* 2>/dev/null || true
+# rm -f is already a no-op for absent paths; any other failure is a real build error.
+rm -f /etc/apt/sources.list.d/novos-markers.list /var/lib/apt/lists/*apt-markers*
 mkdir -p -m 0755 "$MARKER_REPO"
-rm -f "${MARKER_REPO}/"*.deb "${MARKER_REPO}/Packages" "${MARKER_REPO}/Packages.gz" 2>/dev/null || true
+rm -f "${MARKER_REPO}/"*.deb "${MARKER_REPO}/Packages" "${MARKER_REPO}/Packages.gz"
 : > "${MARKER_REPO}/Packages"
 
 build_marker_deb() {
@@ -141,7 +142,8 @@ cat << 'EOF' > /etc/apt/sources.list.d/novos-markers.list
 deb [trusted=yes] file:/usr/share/novos/apt-markers ./
 EOF
 chmod 0644 /etc/apt/sources.list.d/novos-markers.list
-apt-get update -q || true
+# The marker repo must index cleanly; a failed update is fatal.
+apt-get update -q
 
 echo "==> [Stage 5.2] Writing Containerized ComfyUI & Open WebUI Stack (RX 9070 XT RDNA4 Ready)..."
 cat << 'EOF' > /srv/llm/docker-compose.yml
@@ -261,7 +263,7 @@ case "$ACTION" in
         ;;
     enter|shell)
         ensure_box_created
-        shift || true
+        shift
         if [[ $# -gt 0 ]]; then
             exec distrobox enter "$BOX_NAME" -- "$@"
         else
@@ -297,8 +299,7 @@ case "$ACTION" in
             if [[ "$bin_arg" == /* ]]; then
                 bin_path="$bin_arg"
             else
-                bin_path="$(command -v "$bin_arg" || true)"
-                if [[ -z "$bin_path" ]]; then
+                if ! bin_path="$(command -v "$bin_arg")" || [[ -z "$bin_path" ]]; then
                     bin_path="/usr/bin/${bin_arg}"
                 fi
             fi
@@ -499,7 +500,8 @@ print_failure_report() {
         return 0
     fi
     echo "==> NovOS install-time failure report (${FAILURE_TSV}):"
-    awk -F'\t' '
+    # Groups that are not installable profiles (pre-packages, post-calamares, apt) get no --install retry.
+    awk -F'\t' -v installable='^(wifi|no-wifi|bluetooth|no-bluetooth|gaming|dev|devsecops|llm|network|comms|browsers|media|utilities|custom-tools)$' '
         NF >= 3 {
             key = $1 FS $2 FS $3
             if (seen[key]++) next
@@ -514,8 +516,10 @@ print_failure_report() {
                 printf "[Profile: %s] %d failure(s)\n%s", p, cnt[p], items[p]
                 if (p == "packages") {
                     printf "  Retry: sudo novos-setup --packages %s\n", names[p]
-                } else {
+                } else if (p ~ installable) {
                     printf "  Retry: sudo novos-setup --install %s\n", p
+                } else {
+                    printf "  Retry: as root, re-run the command shown in each reason above\n"
                 }
             }
         }
@@ -531,6 +535,40 @@ hide_install_report_autostart() {
     mkdir -p "$user_autostart"
     printf '[Desktop Entry]\nType=Application\nName=NovOS Install Report\nHidden=true\n' \
         > "${user_autostart}/novos-install-report.desktop"
+}
+
+# Runtime only: appends `profile<TAB>item<TAB>reason` to the failure TSV and warns; the caller continues.
+record_install_failure() {
+    local profile="$1"
+    local item="$2"
+    local reason="$3"
+    mkdir -p "$(dirname "$FAILURE_TSV")"
+    printf '%s\t%s\t%s\n' "$profile" "$item" "$reason" >> "$FAILURE_TSV"
+    chmod 0644 "$FAILURE_TSV"
+    echo "[WARN] [Profile: ${profile}] '${item}': ${reason}; recorded in ${FAILURE_TSV} (NOVOS_CONTEXT=${NOVOS_CONTEXT:-runtime})." >&2
+}
+
+# Usage: run_or_record <profile> <item> <command> [args...]
+# Runs a configuration command that is not a package install. Image build (NOVOS_CONTEXT=build):
+# a failure is fatal. Runtime / Calamares: the failure is recorded in the failure TSV (with the
+# command and exit code as the reason) and the caller continues, so the install still completes.
+run_or_record() {
+    local profile="$1"
+    local item="$2"
+    shift 2
+    local rc=0
+    "$@" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        return 0
+    fi
+    local cmd_text="$*"
+    cmd_text="${cmd_text//$'\n'/ }"
+    cmd_text="${cmd_text//$'\t'/ }"
+    if [[ "${NOVOS_CONTEXT:-}" == "build" ]]; then
+        echo "[FATAL] [Profile: ${profile}] '${item}': '${cmd_text}' failed (exit ${rc}) (NOVOS_CONTEXT=build)." >&2
+        exit 1
+    fi
+    record_install_failure "$profile" "$item" "exit ${rc}: ${cmd_text:0:160}"
 }
 
 if [[ "$REPORT_MODE" == "true" ]]; then
@@ -581,9 +619,11 @@ if [[ "$PRE_PACKAGES_MODE" == "true" ]]; then
             rm -f "/dev/${dev_name}"
             mknod -m 666 "/dev/${dev_name}" c "$dev_maj" "$dev_min"
         fi
-        chmod 0666 "/dev/${dev_name}" 2>/dev/null || true
+        run_or_record pre-packages "/dev/${dev_name} mode" chmod 0666 "/dev/${dev_name}"
     done
-    mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=0666 || true
+    if ! mountpoint -q /dev/pts; then
+        run_or_record pre-packages "/dev/pts mount" mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=0666
+    fi
     if [[ ! -c /dev/ptmx ]]; then
         rm -f /dev/ptmx
         if [[ -c /dev/pts/ptmx ]]; then
@@ -592,7 +632,12 @@ if [[ "$PRE_PACKAGES_MODE" == "true" ]]; then
             mknod -m 666 /dev/ptmx c 5 2
         fi
     fi
-    chmod 0666 /dev/ptmx /dev/pts/ptmx 2>/dev/null || true
+    # /dev/pts/ptmx exists only when devpts is mounted (a failed mount is already recorded above).
+    for ptmx_path in /dev/ptmx /dev/pts/ptmx; do
+        if [[ -e "$ptmx_path" ]]; then
+            run_or_record pre-packages "${ptmx_path} mode" chmod 0666 "$ptmx_path"
+        fi
+    done
 
     printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
     chmod 0755 /usr/sbin/policy-rc.d
@@ -607,7 +652,8 @@ if [[ "$PRE_PACKAGES_MODE" == "true" ]]; then
     fi
 
     if command -v debconf-set-selections >/dev/null 2>&1; then
-        printf 'debconf debconf/frontend select Noninteractive\ndebconf debconf/priority select critical\nwireshark-common wireshark-common/install-setuid boolean true\nsamba-common samba-common/workgroup string WORKGROUP\nsamba-common samba-common/dhcp boolean false\nsamba-common samba-common/do_debconf boolean true\n' | debconf-set-selections || true
+        # Here-string, not a pipe: no pipeline/SIGPIPE status can abort --pre-packages.
+        run_or_record pre-packages debconf-selections debconf-set-selections <<< $'debconf debconf/frontend select Noninteractive\ndebconf debconf/priority select critical\nwireshark-common wireshark-common/install-setuid boolean true\nsamba-common samba-common/workgroup string WORKGROUP\nsamba-common samba-common/dhcp boolean false\nsamba-common samba-common/do_debconf boolean true'
     fi
 
     if [[ ! -s /etc/resolv.conf ]] || ! grep -qE '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null; then
@@ -620,16 +666,16 @@ if [[ "$PRE_PACKAGES_MODE" == "true" ]]; then
         fi
     fi
 
-    DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
-    DEBIAN_FRONTEND=noninteractive apt-get update -q || true
+    run_or_record pre-packages "dpkg --configure -a" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+    run_or_record pre-packages "apt-get update" env DEBIAN_FRONTEND=noninteractive apt-get update -q
     exit 0
 fi
 
 # Resolve target user; prefer explicit --user or SUDO_USER if valid, else primary non-devuser regular user (UID 1000-59999)
 if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" || "$TARGET_USER" == @@* ]] || ! id -u "$TARGET_USER" >/dev/null 2>&1; then
-    DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 && $1 != "devuser" {u=$1; exit} END {print u}' /etc/passwd || true)"
+    DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 && $1 != "devuser" {u=$1; exit} END {print u}' /etc/passwd)"
     if [[ -z "$DETECTED_USER" ]]; then
-        DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {u=$1} END {print u}' /etc/passwd || true)"
+        DETECTED_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {u=$1} END {print u}' /etc/passwd)"
     fi
     if [[ -n "$DETECTED_USER" ]]; then
         TARGET_USER="$DETECTED_USER"
@@ -638,7 +684,11 @@ if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" || "$TARGET_USER" == @@* ]] 
     fi
 fi
 
-USER_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
+# A target user without a passwd entry (the devuser fallback on a system without it) has no home yet.
+USER_HOME=""
+if USER_ENTRY="$(getent passwd "$TARGET_USER")"; then
+    USER_HOME="$(cut -d: -f6 <<< "$USER_ENTRY")"
+fi
 if [[ -z "$USER_HOME" ]]; then
     USER_HOME="/home/${TARGET_USER}"
 fi
@@ -661,7 +711,7 @@ verify_apt_ready() {
         attempt=$((attempt + 1))
     done
 
-    dpkg --configure -a >/dev/null 2>&1 || true
+    run_or_record apt "dpkg --configure -a" dpkg --configure -a
 
     if [[ "$APT_UPDATED" != "true" ]]; then
         attempt=1
@@ -675,17 +725,6 @@ verify_apt_ready() {
             attempt=$((attempt + 1))
         done
     fi
-}
-
-# Runtime only: appends `profile<TAB>item<TAB>reason` to the failure TSV and warns; the caller continues.
-record_install_failure() {
-    local profile="$1"
-    local item="$2"
-    local reason="$3"
-    mkdir -p "$(dirname "$FAILURE_TSV")"
-    printf '%s\t%s\t%s\n' "$profile" "$item" "$reason" >> "$FAILURE_TSV"
-    chmod 0644 "$FAILURE_TSV"
-    echo "[WARN] [Profile: ${profile}] '${item}': ${reason}; recorded in ${FAILURE_TSV} (NOVOS_CONTEXT=${NOVOS_CONTEXT:-runtime})." >&2
 }
 
 safe_apt_install() {
@@ -745,7 +784,13 @@ safe_flatpak_install() {
     fi
 }
 
+# Usage: safe_apt_purge <profile> <pkg>...
+# Purges the installed subset with apt-get only (no forced dpkg fallback). Image build: a failed purge is
+# fatal. Runtime / Calamares: on a batch failure each package is purged alone and the ones that still
+# fail are recorded in the failure TSV; the install continues.
 safe_apt_purge() {
+    local profile="$1"
+    shift
     local installed_pkgs=()
     local pkg
     for pkg in "$@"; do
@@ -755,9 +800,155 @@ safe_apt_purge() {
         fi
     done
 
-    if [[ "${#installed_pkgs[@]}" -gt 0 ]]; then
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed_pkgs[@]}" 2>/dev/null || \
-            dpkg --purge --force-depends "${installed_pkgs[@]}" 2>/dev/null || true
+    if [[ "${#installed_pkgs[@]}" -eq 0 ]]; then
+        return 0
+    fi
+    if [[ "${NOVOS_CONTEXT:-}" == "build" ]]; then
+        if ! DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed_pkgs[@]}"; then
+            echo "[FATAL] [Profile: ${profile}] apt-get purge -y ${installed_pkgs[*]} failed (NOVOS_CONTEXT=build)." >&2
+            exit 1
+        fi
+        return 0
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive apt-get purge -y "${installed_pkgs[@]}"; then
+        echo "[WARN] [Profile: ${profile}] apt batch purge failed; retrying ${#installed_pkgs[@]} package(s) individually..." >&2
+        for pkg in "${installed_pkgs[@]}"; do
+            if ! is_pkg_installed "$pkg"; then
+                continue
+            fi
+            if ! DEBIAN_FRONTEND=noninteractive apt-get purge -y "$pkg"; then
+                record_install_failure "$profile" "$pkg" "apt-get purge failed"
+            fi
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Service, Group, Flathub & rfkill Helpers (explicit state tests; failures via run_or_record)
+# ------------------------------------------------------------------------------
+# Unit names without a suffix are services (docker -> docker.service).
+unit_file_name() {
+    if [[ "$1" == *.* ]]; then
+        printf '%s\n' "$1"
+    else
+        printf '%s.service\n' "$1"
+    fi
+}
+
+unit_installed() {
+    local unit
+    unit="$(unit_file_name "$1")"
+    [[ -e "/etc/systemd/system/${unit}" || -e "/usr/lib/systemd/system/${unit}" || -e "/lib/systemd/system/${unit}" ]]
+}
+
+unit_masked() {
+    local unit
+    unit="$(unit_file_name "$1")"
+    [[ -L "/etc/systemd/system/${unit}" && "$(readlink "/etc/systemd/system/${unit}")" == "/dev/null" ]]
+}
+
+# --now only on a booted system: post-Calamares and chroot runs only change the unit links.
+units_act_now() {
+    [[ "$POST_CALAMARES" != "true" ]] && ! systemd-detect-virt --chroot >/dev/null 2>&1
+}
+
+# Usage: enable_units <profile> <start|nostart> <unit>...
+# A unit whose package is not installed is skipped (that package's own failure is already recorded or fatal).
+enable_units() {
+    local profile="$1"
+    local mode="$2"
+    shift 2
+    local now=()
+    if [[ "$mode" == "start" ]] && units_act_now; then
+        now=(--now)
+    fi
+    local unit
+    for unit in "$@"; do
+        if ! unit_installed "$unit"; then
+            echo "[INFO] [Profile: ${profile}] ${unit}: unit not installed; not enabled."
+            continue
+        fi
+        run_or_record "$profile" "enable ${unit}" systemctl enable "${now[@]}" "$unit"
+    done
+}
+
+# Usage: disable_units <profile> <unit>...   (absent units need no disabling)
+disable_units() {
+    local profile="$1"
+    shift
+    local now=()
+    if units_act_now; then
+        now=(--now)
+    fi
+    local unit
+    for unit in "$@"; do
+        if unit_installed "$unit" && ! unit_masked "$unit"; then
+            run_or_record "$profile" "disable ${unit}" systemctl disable "${now[@]}" "$unit"
+        fi
+    done
+}
+
+# Usage: mask_units <profile> <unit>...   (masking also covers units installed later)
+mask_units() {
+    local profile="$1"
+    shift
+    local unit
+    for unit in "$@"; do
+        if ! unit_masked "$unit"; then
+            run_or_record "$profile" "mask ${unit}" systemctl mask "$unit"
+        fi
+    done
+}
+
+# Usage: unmask_units <profile> <unit>...   (only masked units are touched)
+unmask_units() {
+    local profile="$1"
+    shift
+    local unit
+    for unit in "$@"; do
+        if unit_masked "$unit"; then
+            run_or_record "$profile" "unmask ${unit}" systemctl unmask "$unit"
+        fi
+    done
+}
+
+# Usage: ensure_user_groups <profile> <group>...
+# groupadd -f is a no-op for an existing group; the target user joins each group that exists.
+ensure_user_groups() {
+    local profile="$1"
+    shift
+    local grp
+    for grp in "$@"; do
+        run_or_record "$profile" "group ${grp}" groupadd -f "$grp"
+    done
+    if ! id "$TARGET_USER" >/dev/null 2>&1; then
+        return 0
+    fi
+    for grp in "$@"; do
+        if getent group "$grp" >/dev/null; then
+            run_or_record "$profile" "group ${grp} membership" usermod -aG "$grp" "$TARGET_USER"
+        fi
+    done
+}
+
+# Usage: ensure_flathub_remote <profile>
+# Fatal like safe_flatpak_install: without the remote the profile's Flathub installs cannot run.
+ensure_flathub_remote() {
+    local profile="$1"
+    if ! flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo; then
+        echo "[FATAL] [Profile: ${profile}] flatpak remote-add --if-not-exists flathub failed." >&2
+        exit 1
+    fi
+}
+
+# Usage: rfkill_set <profile> <block|unblock> <type>
+# Without /dev/rfkill (chroot without the device, no radio hardware) there is no switch to set.
+rfkill_set() {
+    local profile="$1"
+    local action="$2"
+    local type="$3"
+    if command -v rfkill >/dev/null 2>&1 && [[ -e /dev/rfkill ]]; then
+        run_or_record "$profile" "rfkill ${action} ${type}" rfkill "$action" "$type"
     fi
 }
 
@@ -918,14 +1109,7 @@ fi
 # ------------------------------------------------------------------------------
 configure_gaming_flathub() {
     echo "==> [Gaming] Configuring gaming groups, permissions & Flathub..."
-    for grp in gamemode render video input audio plugdev; do
-        groupadd -f "$grp" 2>/dev/null || true
-    done
-    if id "$TARGET_USER" >/dev/null 2>&1; then
-        for grp in gamemode render video input audio plugdev; do
-            getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" || true
-        done
-    fi
+    ensure_user_groups gaming gamemode render video input audio plugdev
 
     if [[ "$POST_CALAMARES" == "true" ]]; then
         echo "==> [Gaming] Post-Calamares offline mode: skipping online Flathub remote/app downloads."
@@ -936,87 +1120,72 @@ configure_gaming_flathub() {
         safe_apt_install flatpak
     fi
     if command -v flatpak >/dev/null 2>&1; then
-        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+        ensure_flathub_remote gaming
         load_manifest_pkgs gaming flatpak
         safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
 
         if [[ -d "/mnt/raid0" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
-            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.valvesoftware.Steam || true
-            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.heroicgameslauncher.hgl || true
-            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.github.Matoking.protontricks || true
-            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 com.usebottles.bottles || true
-            sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 net.rpcs3.RPCS3 || true
+            for app_id in com.valvesoftware.Steam com.heroicgameslauncher.hgl com.github.Matoking.protontricks com.usebottles.bottles net.rpcs3.RPCS3; do
+                run_or_record gaming "flatpak override ${app_id}" sudo -u "$TARGET_USER" flatpak override --user --filesystem=/mnt/raid0 "$app_id"
+            done
         fi
     fi
 }
 
 configure_dev_runtime() {
     echo "==> [Dev] Configuring Docker/Podman/libvirt services, user groups, Rust (rustup) & Astral uv..."
-    for grp in docker libvirt kvm video render input audio; do
-        groupadd -f "$grp" 2>/dev/null || true
-    done
-    if id "$TARGET_USER" >/dev/null 2>&1; then
-        for grp in docker libvirt kvm video render input audio; do
-            getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" || true
-        done
-    fi
-
-    if [[ "$POST_CALAMARES" == "true" ]] || systemd-detect-virt --chroot >/dev/null 2>&1; then
-        systemctl enable docker containerd libvirtd 2>/dev/null || true
-    else
-        systemctl enable --now docker containerd libvirtd 2>/dev/null || true
-    fi
+    ensure_user_groups dev docker libvirt kvm video render input audio
+    enable_units dev start docker containerd libvirtd
 
     if [[ "$POST_CALAMARES" == "true" ]]; then
         echo "==> [Dev] Post-Calamares offline mode: skipping online rustup/uv network installers."
         return 0
     fi
 
+    # Online per-user installers: each one is its own recorded item (fatal in the image build).
     if id "$TARGET_USER" >/dev/null 2>&1; then
-        sudo -u "$TARGET_USER" bash -c '
-            set -e
-            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        run_or_record dev rustup sudo -u "$TARGET_USER" bash -c '
+            set -euo pipefail
             if [ ! -d "$HOME/.cargo" ]; then
-                curl --connect-timeout 15 --max-time 300 --retry 2 --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --component rust-analyzer clippy rustfmt || true
+                curl --connect-timeout 15 --max-time 300 --retry 2 --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --component rust-analyzer clippy rustfmt
             fi
+        '
+        run_or_record dev uv sudo -u "$TARGET_USER" bash -c '
+            set -euo pipefail
             if [ ! -f "$HOME/.local/bin/uv" ]; then
-                curl --connect-timeout 15 --max-time 300 --retry 2 -LsSf https://astral.sh/uv/install.sh | sh || true
+                curl --connect-timeout 15 --max-time 300 --retry 2 -LsSf https://astral.sh/uv/install.sh | sh
             fi
+        '
+        # appimage-builder needs uv; a missing uv is the recorded 'uv' item above.
+        run_or_record dev appimage-builder sudo -u "$TARGET_USER" bash -c '
+            set -euo pipefail
+            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
             if [ -x "$HOME/.local/bin/uv" ]; then
-                "$HOME/.local/bin/uv" tool install --force appimage-builder || true
+                "$HOME/.local/bin/uv" tool install --force appimage-builder
             fi
-        ' || true
+        '
     fi
 }
 
 configure_devsecops_runtime() {
     echo "==> [DevSecOps] Configuring wireshark/pcap permissions & Kali Rolling box (novos-sec-box)..."
-    groupadd -f wireshark 2>/dev/null || true
-    if id "$TARGET_USER" >/dev/null 2>&1; then
-        getent group wireshark >/dev/null 2>&1 && usermod -aG wireshark "$TARGET_USER" || true
-    fi
+    ensure_user_groups devsecops wireshark
     if [[ -x /usr/bin/dumpcap ]]; then
-        chgrp wireshark /usr/bin/dumpcap 2>/dev/null || true
-        chmod 0750 /usr/bin/dumpcap 2>/dev/null || true
-        setcap cap_net_raw,cap_net_admin=eip /usr/bin/dumpcap 2>/dev/null || true
+        run_or_record devsecops "dumpcap group" chgrp wireshark /usr/bin/dumpcap
+        run_or_record devsecops "dumpcap mode" chmod 0750 /usr/bin/dumpcap
+        run_or_record devsecops "dumpcap capabilities" setcap cap_net_raw,cap_net_admin=eip /usr/bin/dumpcap
     fi
     echo "==> [DevSecOps] Kali Rolling Distrobox ready! Run: novos-sec-box up && novos-sec-box enter"
 }
 
 configure_llm_runtime() {
     echo "==> [LLM] Configuring /srv/llm, sysctl, Docker, Hugging Face CLI, Ollama & ComfyUI Stack..."
-    for grp in docker video render; do
-        groupadd -f "$grp" 2>/dev/null || true
-    done
+    ensure_user_groups llm docker video render
 
     if [[ "$POST_CALAMARES" != "true" ]] && ! command -v docker >/dev/null 2>&1; then
         safe_apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
-    if [[ "$POST_CALAMARES" == "true" ]] || systemd-detect-virt --chroot >/dev/null 2>&1; then
-        systemctl enable docker containerd 2>/dev/null || true
-    else
-        systemctl enable --now docker containerd 2>/dev/null || true
-    fi
+    enable_units llm start docker containerd
 
     mkdir -p /srv/llm/{ollama,huggingface,comfyui,open-webui,models} /etc/sysctl.d
     ln -sfn /srv/llm/ollama /var/lib/ollama
@@ -1069,9 +1238,6 @@ services:
 COMPOSE_EOF
     fi
     if id "$TARGET_USER" >/dev/null 2>&1; then
-        for grp in docker video render; do
-            getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" || true
-        done
         chown -R "${TARGET_USER}:${TARGET_USER}" /srv/llm
     fi
     chmod 2775 /srv/llm
@@ -1089,26 +1255,34 @@ OLLAMA_EOF
         return 0
     fi
 
+    # Online installers: each one is its own recorded item (fatal in the image build).
     if id "$TARGET_USER" >/dev/null 2>&1; then
-        sudo -u "$TARGET_USER" bash -c '
-            set -e
-            export PATH="$HOME/.local/bin:$PATH"
+        run_or_record llm uv sudo -u "$TARGET_USER" bash -c '
+            set -euo pipefail
             if [ ! -f "$HOME/.local/bin/uv" ]; then
-                curl --connect-timeout 15 --max-time 300 --retry 2 -LsSf https://astral.sh/uv/install.sh | sh || true
+                curl --connect-timeout 15 --max-time 300 --retry 2 -LsSf https://astral.sh/uv/install.sh | sh
             fi
+        '
+        # huggingface_hub needs uv; a missing uv is the recorded 'uv' item above.
+        run_or_record llm huggingface_hub sudo -u "$TARGET_USER" bash -c '
+            set -euo pipefail
+            export PATH="$HOME/.local/bin:$PATH"
             if [ -x "$HOME/.local/bin/uv" ]; then
-                "$HOME/.local/bin/uv" tool install --force "huggingface_hub[cli,hf_transfer]" || true
+                "$HOME/.local/bin/uv" tool install --force "huggingface_hub[cli,hf_transfer]"
             fi
-        ' || true
+        '
     fi
 
     if ! command -v ollama >/dev/null 2>&1; then
-        curl --connect-timeout 15 --max-time 300 --retry 2 -fsSL https://ollama.com/install.sh | sh || true
+        run_or_record llm ollama bash -c 'set -euo pipefail; curl --connect-timeout 15 --max-time 300 --retry 2 -fsSL https://ollama.com/install.sh | sh'
     fi
-    systemctl daemon-reload 2>/dev/null || true
+    # Only a systemd-booted system has a manager to reload (sd_booted: /run/systemd/system).
+    if [[ -d /run/systemd/system ]]; then
+        run_or_record llm "systemctl daemon-reload" systemctl daemon-reload
+    fi
 
     if id "$TARGET_USER" >/dev/null 2>&1 && [[ -x "${USER_HOME}/.cargo/bin/cargo" ]]; then
-        sudo -u "$TARGET_USER" "${USER_HOME}/.cargo/bin/cargo" install amdgpu_top || true
+        run_or_record llm amdgpu_top sudo -u "$TARGET_USER" "${USER_HOME}/.cargo/bin/cargo" install amdgpu_top
     fi
 
     echo "==> Containerized ComfyUI & Open WebUI ready! Launch anytime with: novos-llm-stack up"
@@ -1116,14 +1290,7 @@ OLLAMA_EOF
 
 configure_network_runtime() {
     echo "==> [Network] Configuring Samba [DevShare], Tailscale, Syncthing & Remote Services..."
-    for grp in sambashare; do
-        groupadd -f "$grp" 2>/dev/null || true
-    done
-    if id "$TARGET_USER" >/dev/null 2>&1; then
-        for grp in sambashare; do
-            getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" || true
-        done
-    fi
+    ensure_user_groups network sambashare
 
     mkdir -p /srv/devshare /etc/samba
     if id "$TARGET_USER" >/dev/null 2>&1; then
@@ -1148,7 +1315,7 @@ configure_network_runtime() {
 SMB_EOF
     fi
 
-    systemctl enable smbd nmbd ssh 2>/dev/null || true
+    enable_units network nostart smbd nmbd ssh
 }
 
 configure_comms_flathub() {
@@ -1160,7 +1327,7 @@ configure_comms_flathub() {
         safe_apt_install flatpak
     fi
     if command -v flatpak >/dev/null 2>&1; then
-        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+        ensure_flathub_remote comms
         load_manifest_pkgs comms flatpak
         safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
     fi
@@ -1175,7 +1342,7 @@ configure_utilities_flathub() {
         safe_apt_install flatpak
     fi
     if command -v flatpak >/dev/null 2>&1; then
-        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+        ensure_flathub_remote utilities
         load_manifest_pkgs utilities flatpak
         safe_flatpak_install "$CURRENT_PROFILE" "${MANIFEST_PKGS[@]}"
     fi
@@ -1187,10 +1354,10 @@ configure_utilities_flathub() {
 install_wifi_profile() {
     echo "==> [Profile: WiFi] Enabling & installing Wireless Connectivity Stack + Firmware..."
     rm -f /etc/novos/no-wifi /etc/novos/wifi-disabled
-    systemctl unmask wpa_supplicant.service iwd.service 2>/dev/null || true
+    unmask_units wifi wpa_supplicant.service iwd.service
     load_manifest_pkgs wifi novos-meta apt
     safe_apt_install "${MANIFEST_PKGS[@]}"
-    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+    rfkill_set wifi unblock wifi
     verify_profile_deps wifi
 }
 
@@ -1198,10 +1365,10 @@ install_no_wifi_profile() {
     echo "==> [Profile: No-WiFi] Opting out of Wireless Stack: disabling services & purging WiFi firmware..."
     mkdir -p /etc/novos
     touch /etc/novos/no-wifi
-    command -v rfkill >/dev/null 2>&1 && rfkill block wifi 2>/dev/null || true
-    systemctl disable --now iwd.service wpa_supplicant.service 2>/dev/null || true
-    systemctl mask iwd.service wpa_supplicant.service 2>/dev/null || true
-    safe_apt_purge \
+    rfkill_set no-wifi block wifi
+    disable_units no-wifi iwd.service wpa_supplicant.service
+    mask_units no-wifi iwd.service wpa_supplicant.service
+    safe_apt_purge no-wifi \
         novos-profile-wifi \
         iwd wpasupplicant wireless-regdb iw \
         firmware-iwlwifi firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211
@@ -1210,15 +1377,11 @@ install_no_wifi_profile() {
 install_bluetooth_profile() {
     echo "==> [Profile: Bluetooth] Enabling & installing Bluetooth Audio & Peripherals Stack..."
     rm -f /etc/novos/no-bluetooth /etc/novos/bluetooth-disabled
-    systemctl unmask bluetooth.service 2>/dev/null || true
+    unmask_units bluetooth bluetooth.service
     load_manifest_pkgs bluetooth novos-meta apt
     safe_apt_install "${MANIFEST_PKGS[@]}"
-    command -v rfkill >/dev/null 2>&1 && rfkill unblock bluetooth 2>/dev/null || true
-    if [[ "$POST_CALAMARES" == "true" ]] || systemd-detect-virt --chroot >/dev/null 2>&1; then
-        systemctl enable bluetooth.service 2>/dev/null || true
-    else
-        systemctl enable --now bluetooth.service 2>/dev/null || true
-    fi
+    rfkill_set bluetooth unblock bluetooth
+    enable_units bluetooth start bluetooth.service
     verify_profile_deps bluetooth
 }
 
@@ -1226,10 +1389,10 @@ install_no_bluetooth_profile() {
     echo "==> [Profile: No-Bluetooth] Opting out of Bluetooth Stack: masking bluetooth.service & purging packages..."
     mkdir -p /etc/novos
     touch /etc/novos/no-bluetooth
-    command -v rfkill >/dev/null 2>&1 && rfkill block bluetooth 2>/dev/null || true
-    systemctl disable --now bluetooth.service 2>/dev/null || true
-    systemctl mask bluetooth.service 2>/dev/null || true
-    safe_apt_purge \
+    rfkill_set no-bluetooth block bluetooth
+    disable_units no-bluetooth bluetooth.service
+    mask_units no-bluetooth bluetooth.service
+    safe_apt_purge no-bluetooth \
         novos-profile-bluetooth \
         bluez bluez-obexd blueman
 }
@@ -1335,12 +1498,17 @@ install_custom_tools_profile() {
 run_post_calamares() {
     echo "==> [Post-Calamares] Detecting netinstall marker packages & hardware opt-outs for user '${TARGET_USER}'..."
     if [[ -n "$TARGET_USER" && "$TARGET_USER" != "devuser" ]] && id -u "$TARGET_USER" >/dev/null 2>&1; then
-        userdel -r -f devuser 2>/dev/null || deluser --remove-home devuser 2>/dev/null || true
-        groupdel devuser 2>/dev/null || true
-        rm -rf /home/devuser /var/spool/mail/devuser /var/lib/AccountsService/users/devuser /var/lib/AccountsService/icons/devuser 2>/dev/null || true
+        # Explicit state tests: userdel usually removes the devuser group with the user.
+        if id -u devuser >/dev/null 2>&1; then
+            run_or_record post-calamares "remove user devuser" userdel -r -f devuser
+        fi
+        if getent group devuser >/dev/null; then
+            run_or_record post-calamares "remove group devuser" groupdel devuser
+        fi
+        run_or_record post-calamares "remove devuser leftovers" rm -rf /home/devuser /var/spool/mail/devuser /var/lib/AccountsService/users/devuser /var/lib/AccountsService/icons/devuser
     fi
     if id -u "$TARGET_USER" >/dev/null 2>&1; then
-        chown -R "${TARGET_USER}:${TARGET_USER}" /srv/llm /srv/devshare 2>/dev/null || true
+        run_or_record post-calamares "chown /srv/llm /srv/devshare" chown -R "${TARGET_USER}:${TARGET_USER}" /srv/llm /srv/devshare
     fi
 
     # 1. Check WiFi opt-out state (explicit opt-out marker or deselected wireless stack marker package)
@@ -1358,8 +1526,8 @@ run_post_calamares() {
        ! any_pkg_installed bluez bluez-obexd blueman; then
         install_no_bluetooth_profile
     else
-        systemctl unmask bluetooth.service 2>/dev/null || true
-        systemctl enable bluetooth.service 2>/dev/null || true
+        unmask_units bluetooth bluetooth.service
+        enable_units bluetooth nostart bluetooth.service
         verify_profile_deps bluetooth
     fi
 

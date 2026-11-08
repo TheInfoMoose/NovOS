@@ -22,7 +22,7 @@
 "scripts/stages/02-bootstrap-chroot.sh" = 3
 "scripts/stages/03-core-system.sh" = 0
 "scripts/stages/04-cosmic-desktop.sh" = 0
-"scripts/stages/05-profiles-installer.sh" = 70
+"scripts/stages/05-profiles-installer.sh" = 0
 "scripts/stages/06-snapshot-finalize.sh" = 12
 
 [forbidden]
@@ -43,5 +43,5 @@
 "scripts/stages/02-bootstrap-chroot.sh" = 0
 "scripts/stages/03-core-system.sh" = 0
 "scripts/stages/04-cosmic-desktop.sh" = 0
-"scripts/stages/05-profiles-installer.sh" = 1
+"scripts/stages/05-profiles-installer.sh" = 0
 "scripts/stages/06-snapshot-finalize.sh" = 0
