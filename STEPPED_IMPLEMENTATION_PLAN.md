@@ -105,6 +105,8 @@
 * **Decided 2026-11-07 (test overlay):** install-e2e cannot reach the live guest by SSH (no `openssh-server` in the ISO). The user rejected sshd and a serial getty on the production image. Tests boot a derived ISO, the production ISO plus a `live/zz-novos-test.squashfs` layer carrying `qemu-guest-agent` (15F); the harness talks over the agent's virtio-serial channel (15G). The production ISO, its `filesystem.squashfs` and the golden snapshot never contain test hooks. Prefetching the agent is approved: the install-time-package rule covers only packages removed from the build because they broke.
 * **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect. **Verified 2026-11-07** (user boot of `NovOS-sid-amd64-test.iso`): both layers mounted, overlay lowerdir `zz-novos-test.squashfs:filesystem.squashfs`, `qemu-guest-agent` active, `guest-ping` answered.
 * **Found 2026-11-07 (Limine auto-boot):** the same boot sat at the Limine menu until Down+Enter was sent. Both generated configs use `default_entry: 1`, which selects the `/+…` directory line, so the timeout never boots anything; this also stalls every unattended harness run (likely the install-e2e M2 timeout) and real installed systems. Fixed by STEP 15H, ordered before 15G.
+* **Found 2026-11-08 (install-e2e netinstall DNS):** the first install-e2e run over the guest agent (15G) passed M1–M5_INSTALL_ROOTFS, then failed M5_INSTALL_NETINSTALL with "Unable to locate package" for every package. One-off diagnostics over the agent showed the live guest's network is fine (DHCP, NetworkManager `nameserver 10.0.2.3`, strict `apt-get update` rc 0), but in the target chroot every fetch fails with "Temporary failure resolving". Cause: `filesystem.squashfs` ships the build host's systemd-resolved stub as a regular file `/etc/resolv.conf` (`nameserver 127.0.0.53`), because `mount_chroot_pseudo_fs` (`scripts/lib/verify-deps.sh:413-415`) does `cp -L /etc/resolv.conf` into the build chroot and nothing removes it before mksquashfs. The real Calamares `networkcfg` module (ISO copy, `networkcfg/main.py:170-185`) always replaces the target's resolv.conf with the live one, so real installs resolve; the harness's networkcfg reproduction (`[ ! -s ]`) keeps the stale stub, so the harness is unfaithful (STEP 15I). The masking (`apt-get update` exits 0 on fetch warnings; `novos-setup --pre-packages` runs `apt-get update -q || true`, `05-profiles-installer.sh:625`) is already covered by STEP 10E. Shipping the host stub in the image is fixed separately (STEP 15J). Order: 15I → 15C; 15J is independent and changes the production squashfs (fresh build + re-bless).
+* **Before 15J:** the shipped `/etc/resolv.conf` form. Recommended: absent from `filesystem.squashfs` (NetworkManager creates it at boot; Calamares `networkcfg` copies the live one into the target). Alternative: a symlink to `/run/NetworkManager/resolv.conf` (NM `rc-manager=symlink` then leaves `/etc` untouched, but `networkcfg` copies the symlink itself, `follow_symlinks=False`, so the target chroot would get a dangling link until boot and the `--pre-packages` 1.1.1.1 fallback would run). 15J is written for "absent"; change MUTATION_SPEC 1 if you choose otherwise.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -162,9 +164,11 @@
 | **STEP 15A** | **COMPLETED** | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
 | **STEP 15B** | **COMPLETED** | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
 | **STEP 15F** | COMPLETED (user run 2026-11-07: filesystem.squashfs sha256 21a59a99… identical; VM boot verified: both layers mounted, agent answered) | `/boost` | Test-only overlay ISO: production ISO + `live/zz-novos-test.squashfs` (qemu-guest-agent), production squashfs byte-identical | `scripts/make-test-overlay-iso.py` |
-| **STEP 15H** | COMPLETED (user build 2026-11-08: test ISO auto-booted with no keypress, agent answered in <60 s; installed-system auto-boot not yet checked) | `/goal` | Limine `default_entry` boots the first kernel entry, not the menu directory (live ISO + installed system) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh`, `scripts/stages/03-core-system.sh` |
-| **STEP 15G** | PLANNED (blocked on 15H) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
-| **STEP 15C** | PLANNED (blocked on 15G) | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
+| **STEP 15H** | COMPLETED (user build 2026-11-08: test ISO auto-booted with no keypress, agent answered in <60 s; installed-system auto-boot verified 2026-11-08 by install-e2e M6, which booted /dev/vda unattended) | `/goal` | Limine `default_entry` boots the first kernel entry, not the menu directory (live ISO + installed system) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh`, `scripts/stages/03-core-system.sh` |
+| **STEP 15G** | COMPLETED (user runs 2026-11-08 on the test ISO: live-boot pass; install-e2e pass after 15I, 11/11 milestones incl. M5_INSTALL_TEST_AGENT and M6 over the agent; overlay `matches_manifest: true`) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
+| **STEP 15I** | COMPLETED (user run 2026-11-08: target resolv.conf `nameserver 10.0.2.3`; netinstall dev,network passed; install-e2e pass, `--skip-variance-check` pending the kernel ABI bless) | `/goal` | install-e2e networkcfg copies the live resolv.conf like Calamares; netinstall fails fast with the apt fetch errors | `scripts/test-docker-qemu.py` |
+| **STEP 15J** | PLANNED | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh` |
+| **STEP 15C** | PLANNED (blocked on 15I) | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
 | **STEP 15E** | PLANNED (blocked on 15C) | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
 | **STEP 15D** | PLANNED (blocked on 13B, 12B, 15E) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
 
@@ -1865,6 +1869,76 @@ python3 -m py_compile scripts/test-docker-qemu.py && python3 scripts/test-docker
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER VM TEST: `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --iso ./build/NovOS-sid-amd64-test.iso`.
+```
+
+---
+
+### STEP 15I: install-e2e networkcfg Matches Calamares; Netinstall Fails Fast on Fetch Errors
+
+* **Recommended Command:** `/goal`
+
+Found 2026-11-08 (see Open Questions, "install-e2e netinstall DNS"): the harness kept the image's stale `nameserver 127.0.0.53` in the target, so every apt fetch in the chroot failed and `apt-get update` still exited 0.
+
+```text
+[STEP_ID]
+STEP 15I: build_install_rootfs_script reproduces Calamares networkcfg's resolv.conf copy exactly; build_install_netinstall_script fails with the apt fetch errors before apt-get install
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/test-docker-qemu.py
+READ_ONLY_REFS:
+  - Calamares networkcfg module in the ISO (/usr/lib/x86_64-linux-gnu/calamares/modules/networkcfg/main.py:170-185: remove target /etc/resolv.conf, then shutil.copy(live, target, follow_symlinks=False), whenever the live /etc/resolv.conf exists)
+  - calamares/settings.conf (exec order: ... networkcfg, shellprocess@prepackages, packages ...)
+  - Open Questions: "Found 2026-11-08 (install-e2e netinstall DNS)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Calamares-reproduced commands (prepackages, packages update/try_remove/install) stay as they are; the new checks are harness-only diagnostics. No `|| true`; no retry loops that hide a failure.
+
+[PRE_GATE]
+grep -q 'networkcfg: give the chroot the live system' scripts/test-docker-qemu.py && grep -q '^def run_guest_exec' scripts/test-docker-qemu.py
+
+[MUTATION_SPEC]
+1. build_install_rootfs_script, networkcfg: replace the `[ ! -s <tgt>/etc/resolv.conf ]` conditional with Calamares's behavior: if the live `/etc/resolv.conf` exists (`[ -e /etc/resolv.conf ] || [ -L /etc/resolv.conf ]`), `rm -f <tgt>/etc/resolv.conf` then `cp -P /etc/resolv.conf <tgt>/etc/resolv.conf` (no dereference, like follow_symlinks=False); print the target file (`ls -l` + `cat` when it is a regular file) so the excerpt shows the resolver the chroot got. Update the comment to cite networkcfg/main.py.
+2. build_install_netinstall_script: after the Calamares `chroot <tgt> apt-get -q update` (unchanged command), tee its output to `/tmp/novos-e2e-apt-update.log`; harness-only check: if the log has `^Err:` or `^W: Failed to fetch` lines, print `netinstall: apt-get update could not fetch:` plus those lines and exit 1 before `apt-get install`. Also a harness-only `chroot <tgt> getent ahosts deb.debian.org` check before the update that fails with `netinstall: target chroot cannot resolve deb.debian.org (resolv.conf: <first nameserver line>)`.
+3. Self-test (test_calamares_install_config_groups_and_scripts): the rootfs script contains `cp -P /etc/resolv.conf /mnt/novos-install/etc/resolv.conf` and no `! -s /mnt/novos-install/etc/resolv.conf`; the netinstall script contains the fetch-error check and `getent ahosts deb.debian.org`, both before `apt-get -q -y install`; all scripts still pass `bash -n`.
+
+[POST_GATE]
+python3 -m py_compile scripts/test-docker-qemu.py && python3 scripts/test-docker-qemu.py --self-test && grep -q 'cp -P /etc/resolv.conf' scripts/test-docker-qemu.py && grep -q 'getent ahosts deb.debian.org' scripts/test-docker-qemu.py && grep -q 'Failed to fetch' scripts/test-docker-qemu.py && ! grep -q 'if \[ ! -s {tgt}/etc/resolv.conf \]' scripts/test-docker-qemu.py
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER VM TEST: `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --skip-variance-check --iso ./build/NovOS-sid-amd64-test.iso` (`--skip-variance-check` only until the 7.2.15 → 7.3.3 kernel ABI rename is blessed).
+```
+
+---
+
+### STEP 15J: Image No Longer Ships the Build Host's `/etc/resolv.conf`
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15J: Stage 6 removes the build-time /etc/resolv.conf (copy of the host's systemd-resolved stub) from the rootfs before mksquashfs and fails if any remains
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/06-snapshot-finalize.sh
+READ_ONLY_REFS:
+  - scripts/lib/verify-deps.sh (mount_chroot_pseudo_fs:413-415 copies the host resolv.conf into the chroot for build-time networking; stays as is)
+  - Open Questions: "Found 2026-11-08 (install-e2e netinstall DNS)", "Before 15J" (shipped form; written for "absent")
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Build-time chroot networking is unchanged. No `|| true`.
+
+[PRE_GATE]
+grep -qF 'cp -L /etc/resolv.conf "${mount_root}/etc/resolv.conf"' scripts/lib/verify-deps.sh && grep -qF 'Failed to unmount ${MOUNT_ROOT}/${sub} before mksquashfs' scripts/stages/06-snapshot-finalize.sh
+
+[MUTATION_SPEC]
+1. 06-snapshot-finalize.sh Stage 6.6, after the "Failed to unmount ... before mksquashfs" loop (no later chroot mount re-copies it) and before `mksquashfs`: `rm -f "${MOUNT_ROOT}/etc/resolv.conf"`, then `if [[ -e "${MOUNT_ROOT}/etc/resolv.conf" || -L "${MOUNT_ROOT}/etc/resolv.conf" ]]; then echo "[FATAL] build-time /etc/resolv.conf still in the rootfs" >&2; exit 1; fi`, with a comment: the build chroot's resolv.conf is the host's (often the 127.0.0.53 systemd-resolved stub); the live system gets one from NetworkManager and Calamares networkcfg copies the live one into the target.
+2. Echo `[OK]   /etc/resolv.conf removed from the image (NetworkManager writes it at boot)`.
+
+[POST_GATE]
+bash -n scripts/stages/06-snapshot-finalize.sh && awk '/before mksquashfs!/{a=NR} /rm -f "\$\{MOUNT_ROOT\}\/etc\/resolv.conf"/{b=NR} /^mksquashfs /{c=NR} END{exit !(a && b && c && a<b && b<c)}' scripts/stages/06-snapshot-finalize.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`, then `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso` and the live-boot + install-e2e runs against `./build/NovOS-sid-amd64-test.iso`; verify `unsquashfs -l` of the new filesystem.squashfs lists no `etc/resolv.conf`. The production squashfs changes, so the golden snapshot needs the user's bless afterwards.
 ```
 
 ---

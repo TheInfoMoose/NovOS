@@ -6,8 +6,8 @@ Executes automated, headless or VNC-enabled UEFI (OVMF) QEMU/KVM verification
 across two tiers:
   - Tier 1 (`live-boot`):
       1. UEFI OVMF + Limine boot entry handoff.
-      2. Guest network/SSH or serial milestone reached (`systemctl is-system-running`
-         or `cosmic-comp`/`greetd` active).
+      2. Guest agent answers over the `org.qemu.guest_agent.0` virtio-serial channel
+         (`systemctl is-system-running` or `cosmic-comp`/`greetd` active).
       3. Verify `/etc/os-release` (`ID=novos`),
          `/usr/local/bin/novos-custom-tools --self-test`,
          and `/etc/calamares/settings.conf` inside the live guest.
@@ -19,9 +19,14 @@ across two tiers:
          subvolumes `@` ... `@devshare`), rootfs (unpackfs, machineid, fstab, users),
          netinstall (shellprocess@prepackages + `--groups` packages, default `dev,network`),
          shellprocess (every shellprocess-novos.conf command, `@@username@@` = test user),
-         bootloader (the limine-bootloader module, then umount).
+         bootloader (the limine-bootloader module), then the harness-only test-agent
+         sub-step (qemu-guest-agent .debs from the test overlay into the target), then umount.
       3. Reboot VM from `/dev/vda` (without CD-ROM boot override) and verify
          installed system boots cleanly.
+
+The guest is reached only through the QEMU guest agent (STEP 15G): `--iso` must be the
+derived test ISO from `scripts/make-test-overlay-iso.py` (it carries
+`/live/zz-novos-test.squashfs` with `qemu-guest-agent`). There is no SSH.
 
 Enforces pre-flight Nebulous guardrails (`check-guardrail` and `verify-variance`)
 prior to booting QEMU and records post-run telemetry via `nebulous-ctl.py record-attempt`
@@ -106,7 +111,20 @@ INSTALL_E2E_SUBSTEP_MILESTONES: dict[str, str] = {
     "netinstall": "M5_INSTALL_NETINSTALL",
     "shellprocess": "M5_INSTALL_SHELLPROCESS",
     "bootloader": "M5_INSTALL_BOOTLOADER",
+    "test_agent": "M5_INSTALL_TEST_AGENT",
 }
+# Sub-steps that are harness-only, not part of the Calamares exec sequence.
+INSTALL_E2E_HARNESS_ONLY_SUBSTEPS: frozenset[str] = frozenset({"test_agent"})
+
+# QEMU guest agent channel and the STEP 15F test overlay layout (scripts/make-test-overlay-iso.py).
+QGA_PORT_NAME = "org.qemu.guest_agent.0"
+QGA_POLL_INTERVAL_SEC = 0.5
+TEST_OVERLAY_LAYER_ISO_PATH = "/live/zz-novos-test.squashfs"
+TEST_OVERLAY_SHARE = "/usr/share/novos-test"
+TEST_OVERLAY_MANIFEST = TEST_OVERLAY_SHARE + "/overlay.json"
+TEST_OVERLAY_DEBS_DIR = TEST_OVERLAY_SHARE + "/debs"
+TEST_OVERLAY_SCRIPT = "scripts/make-test-overlay-iso.py"
+LIVE_PROD_SQUASHFS_GUEST_PATH = "/run/live/medium/live/filesystem.squashfs"
 
 OVMF_SPLIT_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
@@ -475,10 +493,10 @@ def build_qemu_command(
     ovmf_vars_path: pathlib.Path | None,
     qmp_socket: pathlib.Path,
     serial_log: pathlib.Path,
+    qga_socket: pathlib.Path,
     ram_mb: int = 8192,
     cpus: int = 4,
     use_vnc: bool = False,
-    ssh_port: int = 2222,
     boot_from_disk_only: bool = False,
     kvm_available: bool | None = None,
 ) -> list[str]:
@@ -540,8 +558,14 @@ def build_qemu_command(
             f"unix:{qmp_socket},server,nowait",
             "-serial",
             f"file:{serial_log}",
+            "-chardev",
+            f"socket,id=qga0,path={qga_socket},server=on,wait=off",
+            "-device",
+            "virtio-serial-pci",
+            "-device",
+            f"virtserialport,chardev=qga0,name={QGA_PORT_NAME}",
             "-netdev",
-            f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
+            "user,id=net0",
             "-device",
             "virtio-net-pci,netdev=net0",
         ]
@@ -549,9 +573,9 @@ def build_qemu_command(
     return cmd
 
 
-def build_milestone_plan(tier: str) -> list[dict[str, str]]:
+def build_milestone_plan(tier: str) -> list[dict[str, Any]]:
     """Return the ordered list of verification milestones for the requested tier."""
-    live_boot_milestones = [
+    live_boot_milestones: list[dict[str, Any]] = [
         {
             "id": "M1_UEFI_LIMINE_HANDOFF",
             "tier": "live-boot",
@@ -560,7 +584,7 @@ def build_milestone_plan(tier: str) -> list[dict[str, str]]:
         {
             "id": "M2_GUEST_SESSION_READY",
             "tier": "live-boot",
-            "description": "Guest network/SSH or serial milestone reached (systemctl is-system-running or cosmic-comp/greetd active)",
+            "description": f"Guest agent answers on {QGA_PORT_NAME} (guest-sync-delimited + guest-exec probe of /etc/os-release)",
         },
         {
             "id": "M3_LIVE_GUEST_INVARIANTS",
@@ -610,7 +634,17 @@ def build_milestone_plan(tier: str) -> list[dict[str, str]]:
             {
                 "id": INSTALL_E2E_SUBSTEP_MILESTONES["bootloader"],
                 "tier": "install-e2e",
-                "description": "limine-bootloader Calamares module (ISO copy of main.py), then umount",
+                "description": "limine-bootloader Calamares module (ISO copy of main.py)",
+            },
+            {
+                "id": INSTALL_E2E_SUBSTEP_MILESTONES["test_agent"],
+                "tier": "install-e2e",
+                "harness_only": True,
+                "description": (
+                    f"Harness-only, not part of Calamares: dpkg -i the {TEST_OVERLAY_DEBS_DIR}/*.deb "
+                    "(qemu-guest-agent) in the target chroot after the Golden Master snapshot, "
+                    "check qemu-ga in the target, then umount (Calamares umount module)"
+                ),
             },
             {
                 "id": "M6_REBOOT_INSTALLED_VDA",
@@ -845,55 +879,220 @@ def record_test_telemetry(
 
 
 # ==============================================================================
-# 5. Guest SSH & Live / Install E2E Probing Routines
+# 5. Guest Agent Channel & Live / Install E2E Probing Routines
 # ==============================================================================
 
-def run_guest_ssh(
-    remote_cmd: str,
-    user: str = "devuser",
-    password: str = "novos",
-    port: int = 2222,
-    timeout: int = 30,
+class GuestAgentError(OSError):
+    """The QEMU guest agent channel failed (no answer, closed socket, error reply, bad JSON)."""
+
+
+class GuestAgentClient:
+    """
+    Minimal QEMU guest agent (qemu-ga) client over the host end of the
+    `org.qemu.guest_agent.0` virtio-serial chardev (a QEMU server Unix socket).
+    Replies are newline-delimited JSON; `guest-sync-delimited` replies are prefixed by
+    the 0xFF sentinel, which is stripped before parsing.
+    """
+
+    def __init__(self, socket_path: pathlib.Path) -> None:
+        self.socket_path = socket_path
+        self.sock: socket.socket | None = None
+        self.buf = b""
+
+    def connect(self) -> None:
+        self.close()
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(str(self.socket_path))
+        except OSError:
+            sock.close()
+            raise
+        self.sock = sock
+        self.buf = b""
+
+    def close(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+        self.buf = b""
+
+    def __enter__(self) -> GuestAgentClient:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def _send(self, obj: dict[str, Any]) -> None:
+        if self.sock is None:
+            raise GuestAgentError("guest agent socket is not connected")
+        self.sock.sendall(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
+
+    def _recv(self, timeout: float) -> dict[str, Any]:
+        if self.sock is None:
+            raise GuestAgentError("guest agent socket is not connected")
+        deadline = time.monotonic() + timeout
+        while True:
+            while b"\n" not in self.buf:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise GuestAgentError(f"guest agent reply not complete within {timeout}s")
+                self.sock.settimeout(remaining)
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    raise GuestAgentError("guest agent socket closed")
+                self.buf += chunk
+            line, self.buf = self.buf.split(b"\n", 1)
+            line = line.lstrip(b"\xff").strip()  # guest-sync-delimited sentinel
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError as exc:
+                raise GuestAgentError(f"guest agent sent invalid JSON: {line[:200]!r}") from exc
+            if not isinstance(msg, dict):
+                raise GuestAgentError(f"guest agent sent a non-object reply: {line[:200]!r}")
+            return msg
+
+    def sync(self, timeout: float = 5.0) -> None:
+        """guest-sync-delimited: flush the agent's parser, then drop stale replies until our token."""
+        if self.sock is None:
+            raise GuestAgentError("guest agent socket is not connected")
+        token = int(time.monotonic() * 1000) % 2**31
+        self.sock.sendall(b"\xff")
+        self._send({"execute": "guest-sync-delimited", "arguments": {"id": token}})
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GuestAgentError(f"guest-sync-delimited: no reply with id {token} within {timeout}s")
+            reply = self._recv(remaining)
+            if reply.get("return") == token:
+                return
+
+    def call(self, command: str, arguments: dict[str, Any] | None = None, timeout: float = 30.0) -> Any:
+        msg: dict[str, Any] = {"execute": command}
+        if arguments is not None:
+            msg["arguments"] = arguments
+        self._send(msg)
+        reply = self._recv(timeout)
+        if "error" in reply:
+            raise GuestAgentError(f"{command}: {reply['error']}")
+        if "return" not in reply:
+            raise GuestAgentError(f"{command}: reply without 'return': {reply}")
+        return reply["return"]
+
+
+def run_guest_exec(
+    cmd: str,
+    timeout: float = 30,
+    *,
+    qga_socket: pathlib.Path,
+    sync_timeout: float = 5.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a shell command inside the QEMU guest over localhost SSH port forwarding."""
-    ssh_base = [
-        "ssh",
-        "-p",
-        str(port),
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ConnectTimeout=5",
-        f"{user}@127.0.0.1",
-        remote_cmd,
-    ]
-    if shutil.which("sshpass"):
-        full_cmd = ["sshpass", "-p", password, *ssh_base]
+    """
+    Run `/bin/bash -c <cmd>` as root inside the guest through the QEMU guest agent:
+    guest-sync-delimited, guest-exec (capture-output), then guest-exec-status every
+    QGA_POLL_INTERVAL_SEC until the process exits. Output arrives base64-encoded.
+    Raises subprocess.TimeoutExpired when the command outlives `timeout`, and
+    GuestAgentError (an OSError) when the channel fails.
+    """
+    with GuestAgentClient(qga_socket) as agent:
+        agent.connect()
+        agent.sync(timeout=sync_timeout)
+        started = agent.call(
+            "guest-exec",
+            {"path": "/bin/bash", "arg": ["-c", cmd], "capture-output": True},
+            timeout=sync_timeout,
+        )
+        if not isinstance(started, dict) or "pid" not in started:
+            raise GuestAgentError(f"guest-exec: reply without pid: {started}")
+        pid = started["pid"]
+        deadline = time.monotonic() + timeout
+        while True:
+            status = agent.call("guest-exec-status", {"pid": pid}, timeout=sync_timeout)
+            if not isinstance(status, dict):
+                raise GuestAgentError(f"guest-exec-status: unexpected reply: {status}")
+            if status.get("exited"):
+                break
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            time.sleep(QGA_POLL_INTERVAL_SEC)
+
+    stdout = base64.b64decode(status.get("out-data", "")).decode("utf-8", errors="replace")
+    stderr = base64.b64decode(status.get("err-data", "")).decode("utf-8", errors="replace")
+    for stream in ("out", "err"):
+        if status.get(f"{stream}-truncated"):
+            stderr += f"\n[guest-agent: std{stream} truncated by qemu-ga]"
+    if "exitcode" in status:
+        returncode = int(status["exitcode"])
+    elif "signal" in status:
+        returncode = -int(status["signal"])
     else:
-        full_cmd = [
-            "ssh",
-            "-p",
-            str(port),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "ConnectTimeout=5",
-            f"{user}@127.0.0.1",
-            remote_cmd,
-        ]
-    return subprocess.run(
-        full_cmd,
+        raise GuestAgentError(f"guest-exec-status: exited without exitcode or signal: {status}")
+    return subprocess.CompletedProcess(args=cmd, returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def check_test_overlay_iso(iso_path: pathlib.Path) -> tuple[bool, str]:
+    """
+    Pre-flight (unprivileged xorriso): the --iso must be the STEP 15F derived test ISO,
+    i.e. contain TEST_OVERLAY_LAYER_ISO_PATH with qemu-guest-agent; the production ISO has
+    no guest channel endpoint and cannot be driven by this harness.
+    """
+    hint = (
+        f"--iso {iso_path} has no {TEST_OVERLAY_LAYER_ISO_PATH}; build the test ISO with "
+        f"`python3 {TEST_OVERLAY_SCRIPT} --iso <production ISO>` and pass the derived "
+        "*-test.iso to this harness"
+    )
+    if not iso_path.is_file():
+        return False, f"ISO not found: {iso_path}. {hint}"
+    if shutil.which("xorriso") is None:
+        return False, f"xorriso not found in PATH (needed to check for {TEST_OVERLAY_LAYER_ISO_PATH}). {hint}"
+    res = subprocess.run(
+        ["xorriso", "-indev", str(iso_path), "-find", TEST_OVERLAY_LAYER_ISO_PATH, "-type", "f"],
         check=False,
         capture_output=True,
         text=True,
-        timeout=timeout,
     )
+    listed = [ln.strip().strip("'") for ln in res.stdout.splitlines()]
+    if res.returncode != 0 or TEST_OVERLAY_LAYER_ISO_PATH not in listed:
+        detail = (res.stderr or res.stdout).strip().splitlines()[-3:]
+        return False, f"{hint} (xorriso exit {res.returncode}: {' | '.join(detail)})"
+    return True, f"{TEST_OVERLAY_LAYER_ISO_PATH} present in {iso_path.name}"
+
+
+def collect_test_overlay_record(qga_socket: pathlib.Path) -> dict[str, Any]:
+    """
+    Verdict record of the test overlay (read in the live guest): the overlay manifest
+    and the sha256 of the production filesystem.squashfs on the boot medium, compared
+    with the value the manifest recorded when the test ISO was derived.
+    """
+    record: dict[str, Any] = {"manifest_path": TEST_OVERLAY_MANIFEST}
+    try:
+        res = run_guest_exec(f"cat {shlex.quote(TEST_OVERLAY_MANIFEST)}", timeout=30, qga_socket=qga_socket)
+        if res.returncode == 0:
+            record["manifest"] = json.loads(res.stdout)
+        else:
+            record["manifest_error"] = f"exit {res.returncode}: {res.stderr.strip()}"
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        record["manifest_error"] = str(exc)
+
+    record["production_filesystem_squashfs"] = LIVE_PROD_SQUASHFS_GUEST_PATH
+    try:
+        res = run_guest_exec(
+            f"sha256sum {shlex.quote(LIVE_PROD_SQUASHFS_GUEST_PATH)}", timeout=900, qga_socket=qga_socket
+        )
+        if res.returncode == 0 and res.stdout.split():
+            record["production_filesystem_squashfs_sha256"] = res.stdout.split()[0]
+        else:
+            record["production_filesystem_squashfs_sha256_error"] = f"exit {res.returncode}: {res.stderr.strip()}"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        record["production_filesystem_squashfs_sha256_error"] = str(exc)
+
+    manifest = record.get("manifest")
+    measured = record.get("production_filesystem_squashfs_sha256")
+    if isinstance(manifest, dict) and measured:
+        record["matches_manifest"] = manifest.get("production_filesystem_squashfs_sha256") == measured
+    return record
 
 
 def capture_qmp_screendump(
@@ -927,18 +1126,15 @@ def capture_qmp_screendump(
     return analysis
 
 
-def verify_live_guest_invariants(build_cfg: dict[str, str], ssh_port: int = 2222) -> tuple[bool, str]:
+def verify_live_guest_invariants(build_cfg: dict[str, str], qga_socket: pathlib.Path) -> tuple[bool, str]:
     """
-    Execute Tier 1 (`live-boot`) Milestone 3 inside the guest via SSH:
+    Execute Tier 1 (`live-boot`) Milestone 3 inside the guest (as root, via the guest agent):
       - `/etc/os-release` (`ID=novos`)
       - `/usr/local/bin/novos-custom-tools --self-test`
       - `/etc/calamares/settings.conf`
       - `systemctl is-system-running` or `cosmic-comp` / `greetd` active
     """
     expected_id = build_cfg.get("DISTRO_ID", "novos")
-    root_pass = build_cfg.get("DEFAULT_ROOT_PASS", "novos")
-    user_name = build_cfg.get("DEFAULT_USER", "devuser")
-    user_pass = build_cfg.get("DEFAULT_USER_PASS", "novos")
 
     probe_script = (
         "set -e; "
@@ -949,16 +1145,15 @@ def verify_live_guest_invariants(build_cfg: dict[str, str], ssh_port: int = 2222
         "systemctl is-active greetd || pgrep -x cosmic-comp || true)"
     )
 
-    for login_user, login_pass in (("root", root_pass), (user_name, user_pass)):
-        try:
-            res = run_guest_ssh(probe_script, user=login_user, password=login_pass, port=ssh_port, timeout=60)
-            if res.returncode == 0:
-                return True, res.stdout.strip()
-            last_err = (res.stderr or res.stdout).strip()
-        except subprocess.TimeoutExpired:
-            last_err = f"SSH probe timed out for {login_user}"
-        except OSError as exc:
-            last_err = str(exc)
+    try:
+        res = run_guest_exec(probe_script, timeout=60, qga_socket=qga_socket)
+        if res.returncode == 0:
+            return True, res.stdout.strip()
+        last_err = f"exit {res.returncode}: " + (res.stderr or res.stdout).strip()
+    except subprocess.TimeoutExpired:
+        last_err = "guest-agent probe timed out after 60s"
+    except OSError as exc:
+        last_err = str(exc)
 
     return False, f"Live guest invariant verification failed: {last_err}"
 
@@ -1297,9 +1492,14 @@ def build_install_rootfs_script(
         f"-G {q(','.join(install_cfg['user_groups']))} {q(test_user)}",
         # users.conf doReusePassword: root gets the user's password.
         f"printf '%s\\n' {q(test_user + ':' + password)} {q('root:' + password)} | chroot {tgt} chpasswd",
-        "# networkcfg: give the chroot the live system's resolver when the target's does not resolve",
-        f"if [ ! -s {tgt}/etc/resolv.conf ]; then rm -f {tgt}/etc/resolv.conf; "
-        f"cp -L /etc/resolv.conf {tgt}/etc/resolv.conf; fi",
+        # networkcfg (Calamares networkcfg/main.py:170-185): whenever the live /etc/resolv.conf exists,
+        # remove the target's and copy the live one without dereferencing (follow_symlinks=False).
+        "# networkcfg: replace the target's resolv.conf with the live system's (as Calamares networkcfg)",
+        "if [ -e /etc/resolv.conf ] || [ -L /etc/resolv.conf ]; then "
+        f"rm -f {tgt}/etc/resolv.conf; cp -P /etc/resolv.conf {tgt}/etc/resolv.conf; fi",
+        f"if [ -e {tgt}/etc/resolv.conf ] || [ -L {tgt}/etc/resolv.conf ]; then ls -l {tgt}/etc/resolv.conf; "
+        'else echo "networkcfg: target has no /etc/resolv.conf"; fi',
+        f"if [ -f {tgt}/etc/resolv.conf ] && [ ! -L {tgt}/etc/resolv.conf ]; then cat {tgt}/etc/resolv.conf; fi",
         f"cat {tgt}/etc/fstab",
         f'echo "rootfs: unpacked {src}, user {test_user} created"',
     ]
@@ -1319,8 +1519,22 @@ def build_install_netinstall_script(install_cfg: dict[str, Any], groups: list[di
     for entry in install_cfg["prepackages"]:
         lines.append(f"echo {q('prepackages: ' + entry['command'][:120])}")
         lines.append(f"timeout {int(entry['timeout'])} {_chroot_shell_line(entry['command'])}")
+    # Harness-only diagnostic (not Calamares): the target chroot must resolve the archive host.
+    lines.append(
+        f"if ! chroot {tgt} getent ahosts deb.debian.org > /dev/null; then "
+        "echo \"netinstall: target chroot cannot resolve deb.debian.org "
+        f"(resolv.conf: $(grep -m1 '^nameserver' {tgt}/etc/resolv.conf))\" >&2; exit 1; fi"
+    )
     if install_cfg["packages_update_db"]:
-        lines.append(f"chroot {tgt} apt-get -q update")
+        lines.append(f"chroot {tgt} apt-get -q update 2>&1 | tee /tmp/novos-e2e-apt-update.log")
+        # Harness-only diagnostic: apt-get update exits 0 when fetches fail with warnings; stop here
+        # with the fetch errors instead of letting apt-get install report "Unable to locate package".
+        lines.append(
+            "if grep -E -A1 '^(Err:|W: Failed to fetch)' /tmp/novos-e2e-apt-update.log "
+            "> /tmp/novos-e2e-apt-fetch-errors.log; then "
+            'echo "netinstall: apt-get update could not fetch:" >&2; '
+            "cat /tmp/novos-e2e-apt-fetch-errors.log >&2; exit 1; fi"
+        )
     for pkg in install_cfg["packages_try_remove"]:
         # try_remove: only packages present are removed; a failed removal of a present package fails.
         lines.append(
@@ -1334,7 +1548,7 @@ def build_install_netinstall_script(install_cfg: dict[str, Any], groups: list[di
 
 
 def build_install_bootloader_script(install_cfg: dict[str, Any]) -> str:
-    """limine-bootloader module (the ISO's own main.py) under a libcalamares stand-in, then umount."""
+    """limine-bootloader module (the ISO's own main.py) under a libcalamares stand-in; the target stays mounted."""
     q = shlex.quote
     tgt = INSTALL_E2E_TARGET
     esp_mp = install_cfg["esp"]["mount_point"]
@@ -1382,6 +1596,37 @@ def build_install_bootloader_script(install_cfg: dict[str, Any]) -> str:
         f"test -s {q(tgt + esp_mp + '/limine/limine.conf')}",
         f"test -s {q(tgt + esp_mp + '/EFI/BOOT/BOOTX64.EFI')}",
         "sync",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def build_install_test_agent_script() -> str:
+    """
+    Harness-only sub-step (not part of Calamares), run after the limine module's Golden
+    Master snapshot so the snapshot stays Calamares-identical: dpkg -i the test overlay's
+    .debs (qemu-guest-agent and its dependencies) in the target chroot, check qemu-ga is
+    present in the target, then the Calamares umount module.
+    """
+    q = shlex.quote
+    tgt = INSTALL_E2E_TARGET
+    stage_rel = "/tmp/novos-test-debs"
+    lines = [
+        "set -euo pipefail",
+        "export DEBIAN_FRONTEND=noninteractive",
+        "shopt -s nullglob",
+        f"debs=({q(TEST_OVERLAY_DEBS_DIR)}/*.deb)",
+        f'if [ "${{#debs[@]}}" -eq 0 ]; then echo "test-agent: no .deb in {TEST_OVERLAY_DEBS_DIR}" >&2; exit 1; fi',
+        f"rm -rf {q(tgt + stage_rel)}",
+        f"mkdir -p {q(tgt + stage_rel)}",
+        f'cp -- "${{debs[@]}}" {q(tgt + stage_rel)}/',
+        "inner=()",
+        f'for d in "${{debs[@]}}"; do inner+=({q(stage_rel)}/"$(basename "$d")"); done',
+        'echo "test-agent: dpkg -i ${#inner[@]} packages: ${inner[*]}"',
+        f'chroot {tgt} dpkg -i "${{inner[@]}}"',
+        f"rm -rf {q(tgt + stage_rel)}",
+        f"chroot {tgt} dpkg-query -W qemu-guest-agent",
+        f"test -x {q(tgt + '/usr/sbin/qemu-ga')}",
+        "sync",
         "# umount module",
         f"umount -R {tgt}",
     ]
@@ -1389,9 +1634,9 @@ def build_install_bootloader_script(install_cfg: dict[str, Any]) -> str:
 
 
 def _run_guest_install_substep(
-    script: str, tag: str, root_pass: str, ssh_port: int, timeout: int
+    script: str, tag: str, qga_socket: pathlib.Path, timeout: int
 ) -> tuple[bool, str]:
-    """Run one install sub-step script as root in the guest; return (passed, log excerpt)."""
+    """Run one install sub-step script as root in the guest (guest agent); return (passed, log excerpt)."""
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
     path = f"/tmp/novos-e2e-{tag}"
     remote = (
@@ -1399,7 +1644,7 @@ def _run_guest_install_substep(
         f"{{ bash {path}.sh > {path}.log 2>&1; rc=$?; tail -n {INSTALL_E2E_LOG_EXCERPT_LINES} {path}.log; exit $rc; }}"
     )
     try:
-        res = run_guest_ssh(remote, user="root", password=root_pass, port=ssh_port, timeout=timeout)
+        res = run_guest_exec(remote, timeout=timeout, qga_socket=qga_socket)
     except subprocess.TimeoutExpired:
         return False, f"{tag}: timed out after {timeout}s"
     except OSError as exc:
@@ -1416,7 +1661,7 @@ def run_install_e2e_on_guest(
     build_cfg: dict[str, str],
     install_cfg: dict[str, Any],
     groups: list[dict[str, Any]],
-    ssh_port: int = 2222,
+    qga_socket: pathlib.Path,
     test_user: str = INSTALL_E2E_TEST_USER,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """
@@ -1428,10 +1673,12 @@ def run_install_e2e_on_guest(
       netinstall   - shellprocess@prepackages, then packages.conf try_remove + the `--groups` packages.
       shellprocess - every command of shellprocess-novos.conf in the target chroot,
                      `@@username@@` replaced by the test user.
-      bootloader   - the ISO's limine-bootloader main.py, then umount.
+      bootloader   - the ISO's limine-bootloader main.py (includes the Golden Master snapshot).
+      test_agent   - harness-only, not part of Calamares: dpkg -i the test overlay's .debs
+                     (qemu-guest-agent) in the target, check qemu-ga, then umount.
     Each sub-step is one milestone (passed, detail, log excerpt); the first failure stops the run.
+    Every command runs as root in the live guest through the QEMU guest agent.
     """
-    root_pass = build_cfg.get("DEFAULT_ROOT_PASS", "novos")
     milestones: list[dict[str, Any]] = []
 
     def record(substep: str, passed: bool, detail: str, excerpt: str, **extra: Any) -> bool:
@@ -1442,27 +1689,28 @@ def run_install_e2e_on_guest(
                 "passed": passed,
                 "detail": detail,
                 "log_excerpt": excerpt,
+                "harness_only": substep in INSTALL_E2E_HARNESS_ONLY_SUBSTEPS,
                 **extra,
             }
         )
         return passed
 
     ok, excerpt = _run_guest_install_substep(
-        build_install_partition_script(install_cfg, build_cfg), "partition", root_pass, ssh_port, 600
+        build_install_partition_script(install_cfg, build_cfg), "partition", qga_socket, 600
     )
     subvols = ", ".join(sv["subvolume"] for sv in install_cfg["subvolumes"])
     if not record("partition", ok, f"ESP {install_cfg['esp']['size_mib']} MiB + subvolumes {subvols}", excerpt):
         return False, milestones
 
     ok, excerpt = _run_guest_install_substep(
-        build_install_rootfs_script(install_cfg, build_cfg, test_user), "rootfs", root_pass, ssh_port, 3600
+        build_install_rootfs_script(install_cfg, build_cfg, test_user), "rootfs", qga_socket, 3600
     )
     if not record("rootfs", ok, f"unpacked {install_cfg['unpack_source']}; test user {test_user}", excerpt):
         return False, milestones
 
     netinstall_timeout = sum(int(e["timeout"]) for e in install_cfg["prepackages"]) + 3600
     ok, excerpt = _run_guest_install_substep(
-        build_install_netinstall_script(install_cfg, groups), "netinstall", root_pass, ssh_port, netinstall_timeout
+        build_install_netinstall_script(install_cfg, groups), "netinstall", qga_socket, netinstall_timeout
     )
     if not record(
         "netinstall",
@@ -1482,7 +1730,7 @@ def run_install_e2e_on_guest(
             f"timeout {int(entry['timeout'])} {_chroot_shell_line(command)}\n"
         )
         cmd_ok, cmd_excerpt = _run_guest_install_substep(
-            script, f"shellprocess-{idx}", root_pass, ssh_port, int(entry["timeout"]) + 60
+            script, f"shellprocess-{idx}", qga_socket, int(entry["timeout"]) + 60
         )
         command_results.append({"command": command, "passed": cmd_ok})
         sp_excerpt = f"$ {command}\n{cmd_excerpt}"
@@ -1500,9 +1748,18 @@ def run_install_e2e_on_guest(
         return False, milestones
 
     ok, excerpt = _run_guest_install_substep(
-        build_install_bootloader_script(install_cfg), "bootloader", root_pass, ssh_port, 1800
+        build_install_bootloader_script(install_cfg), "bootloader", qga_socket, 1800
     )
-    record("bootloader", ok, "limine-bootloader module + umount", excerpt)
+    if not record("bootloader", ok, "limine-bootloader module (Golden Master snapshot taken)", excerpt):
+        return False, milestones
+
+    ok, excerpt = _run_guest_install_substep(build_install_test_agent_script(), "test-agent", qga_socket, 900)
+    record(
+        "test_agent",
+        ok,
+        f"harness-only (not Calamares): dpkg -i {TEST_OVERLAY_DEBS_DIR}/*.deb in the target, qemu-ga present, umount",
+        excerpt,
+    )
     return ok, milestones
 
 
@@ -1540,16 +1797,18 @@ def wait_for_guest_readiness(
     serial_log: pathlib.Path,
     build_cfg: dict[str, str],
     timeout_sec: int,
-    ssh_port: int = 2222,
+    qga_socket: pathlib.Path,
     installed_mode: bool = False,
 ) -> tuple[bool, dict[str, bool], str]:
     """
-    Poll serial output and SSH port until guest session/SSH is ready or timeout expires.
+    Poll serial output and the guest agent channel until the agent answers a guest-exec
+    probe or timeout expires. While the guest boots the agent is not running yet, so each
+    failed sync drops the connection and the next poll reconnects.
     Returns (ready, milestone_matches, detail_msg).
     """
     deadline = time.monotonic() + timeout_sec
-    root_pass = build_cfg.get("DEFAULT_ROOT_PASS", "novos")
     last_matches: dict[str, bool] = {}
+    last_agent_err = "no guest agent probe attempted"
     probe_cmd = (
         "grep -q 'ID=' /etc/os-release && test \"$(findmnt -n -o FSTYPE / 2>/dev/null || true)\" = 'btrfs'"
         if installed_mode
@@ -1581,28 +1840,27 @@ def wait_for_guest_readiness(
         else:
             last_matches = {}
 
-        # Probe SSH availability
+        # Probe the guest agent (sync + guest-exec); reconnects on every attempt
         try:
-            ssh_res = run_guest_ssh(
-                probe_cmd,
-                user="root",
-                password=root_pass,
-                port=ssh_port,
-                timeout=8,
-            )
-            if ssh_res.returncode == 0 and (installed_mode or "ID=" in ssh_res.stdout):
-                return True, last_matches, "Guest SSH readiness confirmed"
-        except Exception:
-            pass
+            probe_res = run_guest_exec(probe_cmd, timeout=8, qga_socket=qga_socket)
+            if probe_res.returncode == 0 and (installed_mode or "ID=" in probe_res.stdout):
+                return True, last_matches, "Guest agent readiness confirmed (guest-exec probe passed)"
+            last_agent_err = f"probe exit {probe_res.returncode}: {(probe_res.stderr or probe_res.stdout).strip()}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            last_agent_err = str(exc)
 
         # Check serial milestone fallback
         if not installed_mode and last_matches.get("uefi_ovmf") and last_matches.get("systemd_or_session_ready"):
-            # Give SSH a brief moment if serial already reached session ready
+            # Give the agent a brief moment if serial already reached session ready
             time.sleep(2)
 
         time.sleep(3)
 
-    return False, last_matches, f"Timed out after {timeout_sec}s waiting for guest readiness"
+    return (
+        False,
+        last_matches,
+        f"Timed out after {timeout_sec}s waiting for guest readiness (last guest agent error: {last_agent_err})",
+    )
 
 
 def run_harness(args: argparse.Namespace) -> int:
@@ -1639,9 +1897,17 @@ def run_harness(args: argparse.Namespace) -> int:
         if preflight_rc != EXIT_OK:
             return preflight_rc
 
+        # The harness reaches the guest only through the test overlay's qemu-guest-agent (STEP 15G).
+        overlay_ok, overlay_detail = check_test_overlay_iso(iso_path)
+        if not overlay_ok:
+            print(f"[ERROR] Test overlay pre-flight: {overlay_detail}", file=sys.stderr)
+            return EXIT_ERROR
+        print(f"[OK] Test overlay pre-flight: {overlay_detail}")
+
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     qmp_socket = pathlib.Path(tempfile.gettempdir()) / f"novos-qmp-{os.getpid()}.sock"
+    qga_socket = pathlib.Path(tempfile.gettempdir()) / f"novos-qga-{os.getpid()}.sock"
     serial_log = ARTIFACTS_DIR / f"{ts}-{tier}-serial.log"
     ovmf_vars_path = (vm_storage_dir / "ovmf_vars.fd").resolve()
 
@@ -1667,6 +1933,7 @@ def run_harness(args: argparse.Namespace) -> int:
         ovmf_vars_path=resolved_vars,
         qmp_socket=qmp_socket,
         serial_log=serial_log,
+        qga_socket=qga_socket,
         ram_mb=args.ram,
         cpus=args.cpus,
         use_vnc=args.vnc,
@@ -1694,8 +1961,10 @@ def run_harness(args: argparse.Namespace) -> int:
             "preflight_guardrails": [
                 f"{NEBULOUS_CTL} check-guardrail --item {item_toml}",
                 f"{NEBULOUS_CTL} verify-variance --iso {iso_path}",
+                f"xorriso -indev {iso_path} -find {TEST_OVERLAY_LAYER_ISO_PATH} -type f",
             ],
             "qmp_socket": str(qmp_socket),
+            "qga_socket": str(qga_socket),
             "serial_log": str(serial_log),
             "qemu_command": qemu_cmd,
             "qemu_command_str": " ".join(qemu_cmd),
@@ -1716,6 +1985,7 @@ def run_harness(args: argparse.Namespace) -> int:
     qemu_proc: subprocess.Popen[Any] | None = None
     completed_milestones: list[dict[str, Any]] = []
     screendumps: list[dict[str, Any]] = []
+    test_overlay_record: dict[str, Any] | None = None
     status = "fail"
     error_summary = ""
 
@@ -1739,6 +2009,7 @@ def run_harness(args: argparse.Namespace) -> int:
             serial_log=serial_log,
             build_cfg=build_cfg,
             timeout_sec=timeout_sec,
+            qga_socket=qga_socket,
         )
         completed_milestones.append(
             {
@@ -1758,7 +2029,7 @@ def run_harness(args: argparse.Namespace) -> int:
             raise RuntimeError(ready_msg)
 
         # Tier 1 Milestone 3: Live guest invariants
-        inv_ok, inv_detail = verify_live_guest_invariants(build_cfg)
+        inv_ok, inv_detail = verify_live_guest_invariants(build_cfg, qga_socket)
         completed_milestones.append(
             {
                 "id": "M3_LIVE_GUEST_INVARIANTS",
@@ -1768,6 +2039,9 @@ def run_harness(args: argparse.Namespace) -> int:
         )
         if not inv_ok:
             raise RuntimeError(inv_detail)
+
+        # Verdict record: test overlay manifest + production filesystem.squashfs sha256 (live guest)
+        test_overlay_record = collect_test_overlay_record(qga_socket)
 
         # Tier 1 Milestone 4: Capture final QMP screendump
         sd_live = capture_qmp_screendump(
@@ -1788,7 +2062,9 @@ def run_harness(args: argparse.Namespace) -> int:
 
         # Tier 2 (`install-e2e`) Additional Milestones
         if tier == "install-e2e" and install_cfg is not None:
-            inst_ok, inst_milestones = run_install_e2e_on_guest(build_cfg, install_cfg, install_groups)
+            inst_ok, inst_milestones = run_install_e2e_on_guest(
+                build_cfg, install_cfg, install_groups, qga_socket=qga_socket
+            )
             completed_milestones.extend(inst_milestones)
             if not inst_ok:
                 failed = next(m for m in inst_milestones if not m["passed"])
@@ -1801,6 +2077,8 @@ def run_harness(args: argparse.Namespace) -> int:
             terminate_process(qemu_proc)
             if qmp_socket.exists():
                 qmp_socket.unlink()
+            if qga_socket.exists():
+                qga_socket.unlink()
 
             installed_serial_log = ARTIFACTS_DIR / f"{ts}-install-e2e-reboot-serial.log"
             installed_serial_log.touch(exist_ok=True)
@@ -1813,6 +2091,7 @@ def run_harness(args: argparse.Namespace) -> int:
                 ovmf_vars_path=resolved_vars,
                 qmp_socket=qmp_socket,
                 serial_log=installed_serial_log,
+                qga_socket=qga_socket,
                 ram_mb=args.ram,
                 cpus=args.cpus,
                 use_vnc=args.vnc,
@@ -1829,6 +2108,7 @@ def run_harness(args: argparse.Namespace) -> int:
                 serial_log=installed_serial_log,
                 build_cfg=build_cfg,
                 timeout_sec=min(timeout_sec, 420),
+                qga_socket=qga_socket,
                 installed_mode=True,
             )
             if not inst_ready:
@@ -1860,11 +2140,12 @@ def run_harness(args: argparse.Namespace) -> int:
     finally:
         terminate_process(qemu_proc)
         terminate_process(websockify_proc)
-        if qmp_socket.exists():
-            try:
-                qmp_socket.unlink()
-            except OSError:
-                pass
+        for sock_path in (qmp_socket, qga_socket):
+            if sock_path.exists():
+                try:
+                    sock_path.unlink()
+                except OSError:
+                    pass
 
     llm_diagnostic: dict[str, Any] | None = None
     if status == "fail":
@@ -1902,7 +2183,9 @@ def run_harness(args: argparse.Namespace) -> int:
         "status": status,
         "exit_code": EXIT_OK if status == "pass" else EXIT_ERROR,
         "qmp_socket": str(qmp_socket),
+        "qga_socket": str(qga_socket),
         "serial_log": str(serial_log),
+        "test_overlay": test_overlay_record,
         "milestones": completed_milestones,
         "screendumps": screendumps,
         "error_summary": error_summary,
@@ -2010,7 +2293,24 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         plan_live = build_milestone_plan("live-boot")
         plan_e2e = build_milestone_plan("install-e2e")
         self.assertEqual(len(plan_live), 4)
-        self.assertEqual(len(plan_e2e), 4 + len(INSTALL_E2E_SUBSTEP_MILESTONES) + 1)
+        # 4 live-boot + 6 install sub-steps (5 Calamares + harness-only test agent) + reboot
+        self.assertEqual(len(plan_e2e), 11)
+        self.assertEqual(
+            [m["id"] for m in plan_e2e[4:]],
+            [
+                "M5_INSTALL_PARTITION",
+                "M5_INSTALL_ROOTFS",
+                "M5_INSTALL_NETINSTALL",
+                "M5_INSTALL_SHELLPROCESS",
+                "M5_INSTALL_BOOTLOADER",
+                "M5_INSTALL_TEST_AGENT",
+                "M6_REBOOT_INSTALLED_VDA",
+            ],
+        )
+        self.assertTrue(plan_e2e[9]["harness_only"])
+        self.assertEqual(
+            [m["id"] for m in plan_e2e if m.get("harness_only")], ["M5_INSTALL_TEST_AGENT"]
+        )
 
     def test_calamares_install_config_groups_and_scripts(self) -> None:
         cfg = load_calamares_install_config()
@@ -2040,9 +2340,24 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         net = build_install_netinstall_script(cfg, groups)
         self.assertIn("novos-setup --pre-packages", net)
         self.assertIn("tailscale", net)
+        # Harness-only DNS + fetch-error checks run before the packages module installs anything.
+        install_at = net.index("apt-get -q -y install")
+        self.assertLess(net.index("getent ahosts deb.debian.org"), install_at)
+        self.assertLess(net.index("W: Failed to fetch"), install_at)
+        self.assertLess(net.index("chroot /mnt/novos-install apt-get -q update"), net.index("W: Failed to fetch"))
+        rootfs = build_install_rootfs_script(cfg, {}, INSTALL_E2E_TEST_USER)
+        # networkcfg copies the live resolv.conf unconditionally (Calamares networkcfg/main.py:170-185).
+        self.assertIn("cp -P /etc/resolv.conf /mnt/novos-install/etc/resolv.conf", rootfs)
+        self.assertNotIn("! -s /mnt/novos-install/etc/resolv.conf", rootfs)
         boot = build_install_bootloader_script(cfg)
-        self.assertIn("umount -R /mnt/novos-install", boot)
-        for script in (part, build_install_rootfs_script(cfg, {}, INSTALL_E2E_TEST_USER), net, boot):
+        self.assertNotIn("umount", boot)
+        agent = build_install_test_agent_script()
+        self.assertIn("/usr/share/novos-test/debs/*.deb", agent)
+        self.assertIn('chroot /mnt/novos-install dpkg -i "${inner[@]}"', agent)
+        self.assertIn("/mnt/novos-install/usr/sbin/qemu-ga", agent)
+        self.assertTrue(agent.rstrip().endswith("umount -R /mnt/novos-install"))
+        self.assertLess(agent.index("dpkg -i"), agent.index("umount -R"))
+        for script in (part, build_install_rootfs_script(cfg, {}, INSTALL_E2E_TEST_USER), net, boot, agent):
             res = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
             self.assertEqual(res.returncode, 0, res.stderr)
 
@@ -2068,11 +2383,16 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
                 ovmf_vars_path=vars_f,
                 qmp_socket=pathlib.Path("/tmp/qmp.sock"),
                 serial_log=pathlib.Path("/tmp/serial.log"),
+                qga_socket=pathlib.Path("/tmp/novos-qga-1.sock"),
                 use_vnc=False,
             )
             self.assertIn("-display", cmd_headless)
             self.assertIn("none", cmd_headless)
-            self.assertIn("hostfwd=tcp::2222-:22", " ".join(cmd_headless))
+            joined = " ".join(cmd_headless)
+            self.assertNotIn("hostfwd", joined)
+            self.assertIn("socket,id=qga0,path=/tmp/novos-qga-1.sock,server=on,wait=off", cmd_headless)
+            self.assertIn("virtio-serial-pci", cmd_headless)
+            self.assertIn("virtserialport,chardev=qga0,name=org.qemu.guest_agent.0", cmd_headless)
 
             cmd_vnc = build_qemu_command(
                 iso_path=pathlib.Path("/workspace/build/NovOS-sid-amd64.iso"),
@@ -2082,12 +2402,92 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
                 ovmf_vars_path=vars_f,
                 qmp_socket=pathlib.Path("/tmp/qmp.sock"),
                 serial_log=pathlib.Path("/tmp/serial.log"),
+                qga_socket=pathlib.Path("/tmp/novos-qga-1.sock"),
                 use_vnc=True,
                 boot_from_disk_only=True,
             )
             self.assertIn("-vnc", cmd_vnc)
             self.assertIn("0.0.0.0:0", cmd_vnc)
             self.assertNotIn("-cdrom", cmd_vnc)
+            self.assertIn("virtserialport,chardev=qga0,name=org.qemu.guest_agent.0", cmd_vnc)
+
+    def test_guest_agent_exec_over_fake_socket(self) -> None:
+        import threading
+
+        received: list[dict[str, Any]] = []
+
+        def _fake_agent(srv: socket.socket, exit_after_polls: int | None) -> None:
+            conn, _ = srv.accept()
+            with conn:
+                f = conn.makefile("rb")
+                polls = 0
+                while True:
+                    raw = f.readline()
+                    if not raw:
+                        return
+                    line = raw.lstrip(b"\xff").strip()
+                    if not line:
+                        continue
+                    msg = json.loads(line)
+                    received.append(msg)
+                    cmd = msg["execute"]
+                    if cmd == "guest-sync-delimited":
+                        # A stale reply from an earlier client, then the sentinel-prefixed sync reply.
+                        conn.sendall(b'{"return": {"pid": 1}}\n')
+                        conn.sendall(b"\xff" + json.dumps({"return": msg["arguments"]["id"]}).encode() + b"\n")
+                    elif cmd == "guest-exec":
+                        conn.sendall(b'{"return": {"pid": 4242}}\n')
+                    elif cmd == "guest-exec-status":
+                        polls += 1
+                        if exit_after_polls is None or polls < exit_after_polls:
+                            conn.sendall(b'{"return": {"exited": false}}\n')
+                        else:
+                            reply = {
+                                "exited": True,
+                                "exitcode": 3,
+                                "out-data": base64.b64encode("ID=novos\nü\n".encode()).decode(),
+                                "err-data": base64.b64encode(b"warn\n").decode(),
+                            }
+                            conn.sendall(json.dumps({"return": reply}).encode() + b"\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for exit_after in (2, None):
+                sock_path = pathlib.Path(tmp) / f"qga-{exit_after}.sock"
+                received.clear()
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                    srv.bind(str(sock_path))
+                    srv.listen(1)
+                    t = threading.Thread(target=_fake_agent, args=(srv, exit_after), daemon=True)
+                    t.start()
+                    if exit_after is not None:
+                        res = run_guest_exec("cat /etc/os-release; exit 3", timeout=10, qga_socket=sock_path)
+                        self.assertEqual(res.returncode, 3)
+                        self.assertEqual(res.stdout, "ID=novos\nü\n")
+                        self.assertEqual(res.stderr, "warn\n")
+                    else:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            run_guest_exec("sleep infinity", timeout=1, qga_socket=sock_path)
+                    t.join(timeout=3)
+                cmds = [m["execute"] for m in received]
+                self.assertEqual(cmds[:2], ["guest-sync-delimited", "guest-exec"])
+                self.assertTrue(all(c == "guest-exec-status" for c in cmds[2:]))
+                self.assertGreaterEqual(len(cmds), 4)
+                exec_args = received[1]["arguments"]
+                self.assertEqual(exec_args["path"], "/bin/bash")
+                self.assertEqual(exec_args["arg"][0], "-c")
+                self.assertTrue(exec_args["capture-output"])
+                self.assertEqual(received[2]["arguments"], {"pid": 4242})
+
+            # No agent behind the socket path: a channel error (OSError), never a fake result.
+            with self.assertRaises(OSError):
+                run_guest_exec("true", timeout=1, qga_socket=pathlib.Path(tmp) / "absent.sock")
+
+    def test_test_overlay_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ok, detail = check_test_overlay_iso(pathlib.Path(tmp) / "NovOS-sid-amd64.iso")
+            self.assertFalse(ok)
+            self.assertIn("scripts/make-test-overlay-iso.py", detail)
+            self.assertIn("/live/zz-novos-test.squashfs", detail)
 
     def test_nebulous_ctl_preflight_and_telemetry_integration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
