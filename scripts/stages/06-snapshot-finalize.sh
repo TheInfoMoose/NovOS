@@ -638,9 +638,10 @@ rm -f "${MOUNT_ROOT}/etc/sudoers.d/99-novos-live" \
 
 echo "==> [Stage 6.7] Writing Limine Live ISO Configuration & Nova Branding..."
 cp -f "${REPO_ROOT}/branding/nova-wallpaper.png" "${ISO_WORK}/boot/limine/nova-wallpaper.png"
+# Limine numbers the expanded /+ directory as entry 1; entry 2 is "Boot NovOS Live (XanMod ...)".
 cat << 'EOF' > "${ISO_WORK}/boot/limine/limine.conf"
 timeout: 5
-default_entry: 1
+default_entry: 2
 wallpaper: boot():/boot/limine/nova-wallpaper.png
 term_backend: canvas
 term_palette: 0b0c10;ff6b1a;ff9e44;ffb347;5294e2;d3869b;8ec07c;ebdbb2

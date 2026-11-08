@@ -403,9 +403,10 @@ if [ -d "/.snapshots" ]; then
 fi
 
 # 2. Generate Limine Configuration Header
+# Limine numbers the expanded /+ directory as entry 1; entry 2 is "Primary (XanMod x64v3 Performance Kernel)" (the comment: line is not an entry).
 cat << HEADER > "$CONF"
 timeout: 5
-default_entry: 1
+default_entry: 2
 wallpaper: boot():/limine/nova-wallpaper.png
 term_backend: canvas
 term_palette: 0b0c10;ff6b1a;ff9e44;ffb347;5294e2;d3869b;8ec07c;ebdbb2

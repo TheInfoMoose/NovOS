@@ -103,7 +103,8 @@
 * **Before 15B:** install-e2e cannot drive the Calamares UI; it reproduces Calamares's partition/mount/netinstall/shellprocess configuration from `calamares/modules/*`. Confirm that is an acceptable VM gate, with the manual Calamares install kept as an occasional spot check. **Accepted by the user (2026-11-07).**
 * **Decided 2026-11-07 (install-time packages):** the 15A build cache covers only what the build installs into the ISO. Packages installed at install time (netinstall groups, post-calamares) are never pulled in at build time, so a previously broken version is not frozen into the image or cache. They get their own verification in install-e2e (STEP 15E).
 * **Decided 2026-11-07 (test overlay):** install-e2e cannot reach the live guest by SSH (no `openssh-server` in the ISO). The user rejected sshd and a serial getty on the production image. Tests boot a derived ISO, the production ISO plus a `live/zz-novos-test.squashfs` layer carrying `qemu-guest-agent` (15F); the harness talks over the agent's virtio-serial channel (15G). The production ISO, its `filesystem.squashfs` and the golden snapshot never contain test hooks. Prefetching the agent is approved: the install-time-package rule covers only packages removed from the build because they broke.
-* **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect.
+* **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect. **Verified 2026-11-07** (user boot of `NovOS-sid-amd64-test.iso`): both layers mounted, overlay lowerdir `zz-novos-test.squashfs:filesystem.squashfs`, `qemu-guest-agent` active, `guest-ping` answered.
+* **Found 2026-11-07 (Limine auto-boot):** the same boot sat at the Limine menu until Down+Enter was sent. Both generated configs use `default_entry: 1`, which selects the `/+…` directory line, so the timeout never boots anything; this also stalls every unattended harness run (likely the install-e2e M2 timeout) and real installed systems. Fixed by STEP 15H, ordered before 15G.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -160,8 +161,9 @@
 | **STEP 14A** | PLANNED | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` |
 | **STEP 15A** | **COMPLETED** | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
 | **STEP 15B** | **COMPLETED** | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
-| **STEP 15F** | COMPLETED (user run 2026-11-07: filesystem.squashfs sha256 21a59a99… identical; VM boot pending) | `/boost` | Test-only overlay ISO: production ISO + `live/zz-novos-test.squashfs` (qemu-guest-agent), production squashfs byte-identical | `scripts/make-test-overlay-iso.py` |
-| **STEP 15G** | PLANNED (blocked on 15F) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
+| **STEP 15F** | COMPLETED (user run 2026-11-07: filesystem.squashfs sha256 21a59a99… identical; VM boot verified: both layers mounted, agent answered) | `/boost` | Test-only overlay ISO: production ISO + `live/zz-novos-test.squashfs` (qemu-guest-agent), production squashfs byte-identical | `scripts/make-test-overlay-iso.py` |
+| **STEP 15H** | COMPLETED (user build 2026-11-08: test ISO auto-booted with no keypress, agent answered in <60 s; installed-system auto-boot not yet checked) | `/goal` | Limine `default_entry` boots the first kernel entry, not the menu directory (live ISO + installed system) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh`, `scripts/stages/03-core-system.sh` |
+| **STEP 15G** | PLANNED (blocked on 15H) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
 | **STEP 15C** | PLANNED (blocked on 15G) | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
 | **STEP 15E** | PLANNED (blocked on 15C) | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
 | **STEP 15D** | PLANNED (blocked on 13B, 12B, 15E) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
@@ -1682,6 +1684,7 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 Order: 15B → 15C → 15E (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B, 15C and 15E.
 Amended 2026-11-07: the first install-e2e run after 15B timed out at M2 because the live ISO has no `openssh-server` (install-time `network` group only) and the harness logs in by SSH. Decided: the production ISO gets no test hook; tests boot a derived overlay ISO (15F) and reach the guest through the QEMU guest agent (15G). New order: 15F → 15G → 15C → 15E.
+Amended 2026-11-07: the first boot of the 15F test ISO stalled at the Limine menu (`default_entry: 1` selects the `/+` directory). New order: 15F → 15H → 15G → 15C → 15E. 15H changes the production build, so its fresh build + test-ISO boot is user-run before 15G starts.
 
 ### STEP 15A: Third-Party Artifact Cache
 
@@ -1793,6 +1796,43 @@ Halt immediately after POST_GATE exits 0 and report verification status. Request
 
 ---
 
+### STEP 15H: Limine Auto-Boots the First Kernel Entry
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15H: Both generated limine.conf files set default_entry to the first kernel entry instead of the `/+` menu directory, so the 5 s timeout boots without a keypress (live ISO and installed system)
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/06-snapshot-finalize.sh
+  - scripts/stages/03-core-system.sh
+READ_ONLY_REFS:
+  - calamares/modules/limine-bootloader/main.py (runs /usr/local/sbin/update-limine-snapshots, which 03 writes; it sets no default_entry itself)
+  - Open Questions: "Found 2026-11-07 (Limine auto-boot)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No other change to either limine.conf (entries, cmdlines, timeout, branding) and no other change to either stage script; the `|| true` lines in update-limine-snapshots belong to STEP 10C.
+
+[PRE_GATE]
+grep -q '^default_entry: 1$' scripts/stages/06-snapshot-finalize.sh && grep -q '^default_entry: 1$' scripts/stages/03-core-system.sh
+
+[MUTATION_SPEC]
+1. scripts/stages/06-snapshot-finalize.sh, Stage 6.7 live ISO limine.conf heredoc: `default_entry: 1` → `default_entry: 2`, with a comment line above the heredoc: Limine numbers the expanded `/+` directory as entry 1; entry 2 is "Boot NovOS Live (XanMod …)".
+2. scripts/stages/03-core-system.sh, the HEADER heredoc inside /usr/local/sbin/update-limine-snapshots: `default_entry: 1` → `default_entry: 2`, same comment (entry 2 is "Primary (XanMod x64v3 Performance Kernel)"; the directory's `comment:` line is not an entry).
+3. Nothing else changes.
+
+[POST_GATE]
+bash -n scripts/stages/06-snapshot-finalize.sh && bash -n scripts/stages/03-core-system.sh && grep -q '^default_entry: 2$' scripts/stages/06-snapshot-finalize.sh && grep -q '^default_entry: 2$' scripts/stages/03-core-system.sh && ! grep -q '^default_entry: 1$' scripts/stages/06-snapshot-finalize.sh scripts/stages/03-core-system.sh
+
+User verification (after POST_GATE; user-run): fresh build, `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso`, then boot the test ISO with no keypress; the guest agent must answer (the 2026-11-07 one-off check script, or 15G's harness once it lands). A manual Calamares install must reach the desktop after reboot without a keypress at the Limine menu.
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status; the step's [USER BUILD] verification is the user's.
+```
+
+---
+
 ### STEP 15G: Harness Uses the QEMU Guest Agent Instead of SSH
 
 * **Recommended Command:** `/boost`
@@ -1811,7 +1851,7 @@ FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES. Install sub-steps M5_INSTALL_PARTITION..BOOTLOADER keep their Calamares behavior; live-boot and install-e2e keep their exit codes.
 
 [PRE_GATE]
-test -f scripts/make-test-overlay-iso.py && grep -q '^def run_install_e2e_on_guest' scripts/test-docker-qemu.py
+test -f scripts/make-test-overlay-iso.py && grep -q '^def run_install_e2e_on_guest' scripts/test-docker-qemu.py && grep -q '^default_entry: 2$' scripts/stages/06-snapshot-finalize.sh
 
 [MUTATION_SPEC]
 1. build_qemu_command: add a guest-agent channel (`-chardev socket,id=qga0,path=<tmp>/novos-qga-<pid>.sock,server=on,wait=off`, `-device virtio-serial-pci`, `-device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0`) for both the live boot and the installed-disk reboot.
