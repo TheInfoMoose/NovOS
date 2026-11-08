@@ -2,8 +2,6 @@
 # Nebulous Tiered Work Item: item-001-docker-qemu-ci
 # ==============================================================================
 
-attempts = []
-
 [item]
 id = "item-001-docker-qemu-ci"
 phase_id = "phase-01-ci-foundation"
@@ -12,4 +10,43 @@ status = "in_progress"
 loop_locked = false
 retry_count = 0
 negative_constraints = []
-attempts = []
+
+[[attempts]]
+timestamp = "2026-11-07T21:59:47.832469+00:00"
+stage = "install-e2e"
+status = "fail"
+error_summary = "Timed out after 1200s waiting for guest readiness"
+error_fingerprint = "3b9c45640c421370"
+diff_fingerprint = "c1c28460e7989d91"
+modified_files = ["STEPPED_IMPLEMENTATION_PLAN.md", "scripts/test-docker-qemu.py"]
+log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261107T213943Z-install-e2e-serial.log"
+
+[[attempts]]
+timestamp = "2026-11-08T13:00:19.059832+00:00"
+stage = "live-boot"
+status = "pass"
+error_summary = "BdsDxe: starting Boot0001 \"UEFI QEMU DVD-ROM QM00005 \" from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)"
+error_fingerprint = "none"
+diff_fingerprint = "b94da4b636aa67c8"
+modified_files = [".nebulous/items/item-001-docker-qemu-ci.toml", "STEPPED_IMPLEMENTATION_PLAN.md", "scripts/test-docker-qemu.py"]
+log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261108T130001Z-live-boot-serial.log"
+
+[[attempts]]
+timestamp = "2026-11-08T13:02:11.548153+00:00"
+stage = "install-e2e"
+status = "fail"
+error_summary = "install-e2e netinstall failed (M5_INSTALL_NETINSTALL): shellprocess-prepackages.conf + groups: Development, Antigravity, Containers & Virtualization; Workstation Network, Remote & NAS (DevShare)\n[exit 100]\nE: Unable to locate package buildah\nE: Unable to locate package skopeo\nE: Unable to locate package distrobox\nE: Unable to locate package qemu-system-x86\nE: Unable to locate package libvirt-daemon-system\nE: Unable to locate package virt-manager\nE: Unable to locate package cmake\nE: Unable to locate package ninja-build\nE: Unable to locate package python3-full\nE: Package 'python3-dev' has no installation candidate\nE: Unable to locate package python3-pip\nE: Package 'python3-venv' has no installation candidate\nE: Unable to locate package ghc\nE: Unable to locate package cabal-install\nE: Unable to locate package haskell-stack\nE: Unable to locate package nodejs\nE: Unable to locate package npm\nE: Unable to locate package golang-go\nE: Unable to locate package pkg-config\nE: Unable to locate package libssl-dev\nE: Unable to locate package libudev-dev\nE: Unable to locate package gh\nE: Unable to locate package lazygit\nE: Unable to locate package alacritty\nE: Unable to locate package alien\nE: Unable to locate package rpm2cpio\nE: Unable to locate package patchelf\nE: Unable to locate package zsync\nE: Unable to locate package strace\nE: Unable to locate package samba\nE: Unable to locate package smbclient\nE: Unable to locate package cifs-utils\nE: Unable to locate package remmina\nE: Unable to locate package remmina-plugin-rdp\nE: Unable to locate package remmina-plugin-vnc\nE: Unable to locate package wireguard-tools\nE: Package 'openssh-server' has no installation candidate\nE: Unable to locate package tailscale\nE: Unable to locate package syncthing\nE: Unable to locate package rclone"
+error_fingerprint = "f461c40155246c03"
+diff_fingerprint = "98cca799abe75db0"
+modified_files = [".nebulous/items/item-001-docker-qemu-ci.toml", "STEPPED_IMPLEMENTATION_PLAN.md", "scripts/test-docker-qemu.py"]
+log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261108T130037Z-install-e2e-serial.log"
+
+[[attempts]]
+timestamp = "2026-11-08T14:24:40.410306+00:00"
+stage = "install-e2e"
+status = "pass"
+error_summary = "BdsDxe: starting Boot0003 \"NovOS\" from HD(1,GPT,190EDBF8-1039-4E01-9A5F-0985471B3FD0,0x800,0xC00000)/\\EFI\\BOOT\\BOOTX64.EFI"
+error_fingerprint = "none"
+diff_fingerprint = "a3f91c685540b433"
+modified_files = [".nebulous/items/item-001-docker-qemu-ci.toml", "STEPPED_IMPLEMENTATION_PLAN.md", "scripts/test-docker-qemu.py"]
+log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261108T142002Z-install-e2e-reboot-serial.log"
