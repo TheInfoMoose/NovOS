@@ -26,6 +26,11 @@ across two tiers:
       4. M6_INSTALLED_CHECKS on the installed disk: the `--groups` profiles' apt packages
          are installed, custom tools run at their manifest version (`zig version`) with
          install_dir owned 0:0, and `tailscale version` succeeds when network is selected.
+      5. M7_INSTALL_TIME_COMPONENTS (STEP 15E): every package installed at install time (not in
+         the live rootfs, not a test-overlay package) with its version and apt origin; each
+         --groups package must be installed and each non-Debian origin must be a configured
+         repo (e.g. tailscale from pkgs.tailscale.com). Rows go to
+         `logs/qemu-artifacts/install-components.tsv` (package, version, arch, origin, group).
 
 The guest is reached only through the QEMU guest agent (STEP 15G): `--iso` must be the
 derived test ISO from `scripts/make-test-overlay-iso.py` (it carries
@@ -92,6 +97,19 @@ INSTALLED_CHECKS_TIMEOUT_SEC = 120
 # Version command per `source: custom-tool` entry; its first stdout line must equal the
 # custom-tools/manifest.yaml `version`. A custom tool without an entry here fails the check.
 CUSTOM_TOOL_VERSION_ARGS: dict[str, tuple[str, ...]] = {"zig": ("version",)}
+# M7_INSTALL_TIME_COMPONENTS (STEP 15E): the image's configured non-Debian apt repos, read from the
+# scripts that write them: Stage 3 "Pre-configure Third-Party Repositories" (XanMod, Debian COSMIC,
+# Docker, VS Code, Tailscale, Antigravity) and Stage 5.1c's offline novos-markers repo. The
+# installed system inherits these sources from filesystem.squashfs; nothing adds repos at install time.
+THIRD_PARTY_REPO_SOURCE_SCRIPTS: tuple[pathlib.Path, ...] = (
+    REPO_ROOT / "scripts" / "stages" / "03-core-system.sh",
+    REPO_ROOT / "scripts" / "stages" / "05-profiles-installer.sh",
+)
+INSTALL_COMPONENTS_TSV = "install-components.tsv"
+DEFAULT_DEBIAN_MIRROR = "http://deb.debian.org/debian"
+DPKG_STATUS_SOURCE = "/var/lib/dpkg/status"
+_DEB_SOURCE_LINE = re.compile(r'^[ \t]*(?:echo[ \t]+["\'])?deb[ \t]+(?:\[[^\]]*\][ \t]+)?(\S+)', re.M)
+_DEBIAN_HOST_URL = re.compile(r"^https?://([^/]+\.)?debian\.org(/|$)")
 DEFAULT_INSTALL_GROUPS = "dev,network"
 INSTALL_E2E_DISK = "/dev/vda"
 INSTALL_E2E_TARGET = "/mnt/novos-install"
@@ -672,6 +690,17 @@ def build_milestone_plan(tier: str) -> list[dict[str, Any]]:
                     "(`dpkg-query -W`); every custom-tool entry runs (`zig version` equals the manifest version), "
                     "its install_dir is owned 0:0 throughout and its install_target resolves into it; "
                     "`tailscale version` succeeds when network is selected"
+                ),
+            },
+            {
+                "id": "M7_INSTALL_TIME_COMPONENTS",
+                "tier": "install-e2e",
+                "description": (
+                    "On the booted installed disk (guest agent): installed packages absent from the live rootfs "
+                    f"package list (captured before install), minus the {TEST_OVERLAY_MANIFEST} harness-only "
+                    "packages, each with version and `apt-cache policy` *** origin (STEP 15A Debian-mirror rule); "
+                    "every --groups package is installed and every non-Debian origin is a configured repo "
+                    f"(Stage 3 / Stage 5.1c sources); rows written to {INSTALL_COMPONENTS_TSV}"
                 ),
             },
         ]
@@ -2018,6 +2047,341 @@ def verify_installed_system(
     }
 
 
+def is_debian_source(url: str, debian_mirror: str) -> bool:
+    """STEP 15A Debian-mirror rule: the configured DEBIAN_MIRROR prefix or any *.debian.org URL."""
+    return url.startswith(debian_mirror) or bool(_DEBIAN_HOST_URL.match(url))
+
+
+def load_third_party_repo_urls(
+    debian_mirror: str, scripts: tuple[pathlib.Path, ...] = THIRD_PARTY_REPO_SOURCE_SCRIPTS
+) -> list[str]:
+    """
+    URLs of every non-Debian `deb [...] <url> ...` source the build scripts configure in the image
+    (shell-variable URLs such as ${DEBIAN_MIRROR} and Debian mirrors are skipped).
+    """
+    urls: list[str] = []
+    for path in scripts:
+        for match in _DEB_SOURCE_LINE.finditer(path.read_text(encoding="utf-8", errors="replace")):
+            url = match.group(1).rstrip("/")
+            if "$" in url or is_debian_source(url, debian_mirror) or url in urls:
+                continue
+            urls.append(url)
+    if not urls:
+        raise ValueError(
+            "no third-party apt repo found in " + ", ".join(str(p.relative_to(REPO_ROOT)) for p in scripts)
+        )
+    return urls
+
+
+def configured_repo_for(url: str, repo_urls: list[str]) -> str | None:
+    """The configured repo URL that `url` (an apt-cache policy source URI) belongs to, or None."""
+    u = url.rstrip("/")
+    return next((r for r in repo_urls if u == r or u.startswith(r + "/")), None)
+
+
+def build_package_list_script() -> str:
+    """Guest script: `A<TAB>native-arch`, then `P<TAB>status-abbrev<TAB>Package<TAB>Architecture<TAB>Version` rows."""
+    fmt = "P\\t${db:Status-Abbrev}\\t${Package}\\t${Architecture}\\t${Version}\\n"
+    return (
+        f"export LC_ALL=C PATH={shlex.quote(INSTALLED_CHECKS_PATH)}\n"
+        "set -euo pipefail\n"
+        "printf 'A\\t%s\\n' \"$(dpkg --print-architecture)\"\n"
+        f"dpkg-query -W -f='{fmt}'\n"
+    )
+
+
+def parse_package_list(report: str) -> tuple[str | None, dict[tuple[str, str], str]]:
+    """(native arch, {(package, arch): version}) of the installed (`ii`/`hi`) rows of build_package_list_script."""
+    native: str | None = None
+    packages: dict[tuple[str, str], str] = {}
+    for line in report.splitlines():
+        fields = line.split("\t")
+        if fields[0] == "A" and len(fields) >= 2:
+            native = fields[1].strip() or None
+        elif fields[0] == "P" and len(fields) >= 5 and fields[1].strip() in ("ii", "hi"):
+            packages[(fields[2], fields[3])] = fields[4]
+    return native, packages
+
+
+def parse_apt_cache_policy(text: str, native_arch: str) -> dict[str, dict[str, Any]]:
+    """
+    `apt-cache policy` output by package (a `:<native>` qualifier is stripped): installed and
+    candidate versions, and the version table as [{version, star, sources: [(uri, dist)]}];
+    the dpkg status file appears as (DPKG_STATUS_SOURCE, "").
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    cur: dict[str, Any] | None = None
+    ver: dict[str, Any] | None = None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and line.endswith(":"):
+            name = line[:-1]
+            if name.endswith(f":{native_arch}"):
+                name = name[: -len(native_arch) - 1]
+            cur = {"installed": None, "candidate": None, "versions": []}
+            entries[name] = cur
+            ver = None
+            continue
+        if cur is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("Installed:"):
+            cur["installed"] = stripped.split(":", 1)[1].strip()
+            continue
+        if stripped.startswith("Candidate:"):
+            cur["candidate"] = stripped.split(":", 1)[1].strip()
+            continue
+        m = re.match(r"^ (\*\*\*| {3}) (\S+) (-?\d+)\s*$", line)
+        if m:
+            ver = {"version": m.group(2), "star": m.group(1) == "***", "sources": []}
+            cur["versions"].append(ver)
+            continue
+        m = re.match(r"^ {8}-?\d+ (\S+)(?: (\S+))?", line)
+        if m and ver is not None:
+            uri = m.group(1)
+            ver["sources"].append((uri, "" if uri == DPKG_STATUS_SOURCE else (m.group(2) or "")))
+    return entries
+
+
+def classify_policy_origin(entry: dict[str, Any], debian_mirror: str) -> tuple[str, str]:
+    """
+    (kind, origin) of the installed (`***`) version, by the STEP 15A rule: `debian` when a Debian
+    mirror serves it; `third-party` when only non-Debian repos serve it, or when it is known only
+    from the dpkg status file and another version comes from a third-party repo; `local` when no
+    repo serves it; `none` when nothing is installed. `origin` is `<uri> <dist>`.
+    """
+    star = next((v for v in entry["versions"] if v["star"]), None)
+    if star is None:
+        return "none", "-"
+    repo_sources = [s for s in star["sources"] if s[0] != DPKG_STATUS_SOURCE]
+    debian = [s for s in repo_sources if is_debian_source(s[0], debian_mirror)]
+    if debian:
+        return "debian", " ".join(debian[0]).strip()
+    third_party = [s for s in repo_sources if not is_debian_source(s[0], debian_mirror)]
+    if third_party:
+        return "third-party", " ".join(third_party[0]).strip()
+    for other in entry["versions"]:
+        for src in other["sources"]:
+            if src[0] != DPKG_STATUS_SOURCE and not is_debian_source(src[0], debian_mirror):
+                return "third-party", " ".join(src).strip()
+    return "local", DPKG_STATUS_SOURCE
+
+
+def _policy_query_name(name: str, arch: str, native_arch: str) -> str:
+    return name if arch in (native_arch, "all") else f"{name}:{arch}"
+
+
+def _resolve_installed_spec(
+    spec: str, packages: dict[tuple[str, str], str], native_arch: str
+) -> tuple[str, str] | None:
+    name, _, arch = spec.partition(":")
+    for candidate in ([arch] if arch else [native_arch, "all"]):
+        if (name, candidate) in packages:
+            return name, candidate
+    return None
+
+
+def install_time_policy_queries(
+    live_pkgs: dict[tuple[str, str], str],
+    installed_pkgs: dict[tuple[str, str], str],
+    overlay_names: set[str],
+    native_arch: str,
+) -> list[str]:
+    """apt-cache policy names of the install-time packages (installed, not in the live rootfs, not harness-only)."""
+    return sorted(
+        _policy_query_name(n, a, native_arch)
+        for (n, a) in installed_pkgs
+        if (n, a) not in live_pkgs and n not in overlay_names
+    )
+
+
+def evaluate_install_time_components(
+    groups: list[dict[str, Any]],
+    live_pkgs: dict[tuple[str, str], str],
+    installed_pkgs: dict[tuple[str, str], str],
+    overlay_names: set[str],
+    policy: dict[str, dict[str, Any]],
+    native_arch: str,
+    debian_mirror: str,
+    repo_urls: list[str],
+) -> dict[str, Any]:
+    """
+    Install-time packages = installed on the target disk, absent from the live rootfs, not named in
+    the test overlay manifest. Each gets a row {package, version, arch, origin, group, kind}; `group`
+    is the comma-joined --groups tokens whose netinstall packages name it (`-` for dependencies).
+    Failures (`group=<g> package=<p> version=<v> origin=<o>: <reason>`):
+      - a selected-group package that is not installed;
+      - an install-time package whose installed version comes from no configured apt repo
+        (third-party origin outside load_third_party_repo_urls, dpkg-status-only, or no policy entry).
+    """
+    install_time = sorted(
+        (n, a, v)
+        for (n, a), v in installed_pkgs.items()
+        if (n, a) not in live_pkgs and n not in overlay_names
+    )
+    install_keys = {(n, a) for n, a, _ in install_time}
+    group_of: dict[tuple[str, str], list[str]] = {}
+    missing: list[tuple[str, str]] = []
+    for group in groups:
+        token = str(group["token"])
+        for spec in group["packages"]:
+            key = _resolve_installed_spec(str(spec), installed_pkgs, native_arch)
+            if key is None:
+                if (token, str(spec)) not in missing:
+                    missing.append((token, str(spec)))
+            elif key in install_keys and token not in group_of.setdefault(key, []):
+                group_of[key].append(token)
+
+    rows: list[dict[str, str]] = []
+    failures: list[str] = []
+    for name, arch, version in install_time:
+        query = _policy_query_name(name, arch, native_arch)
+        entry = policy.get(query)
+        kind, origin = classify_policy_origin(entry, debian_mirror) if entry else ("unknown", "(no apt-cache policy entry)")
+        group_s = ",".join(group_of.get((name, arch), [])) or "-"
+        rows.append(
+            {"package": query, "version": version, "arch": arch, "origin": origin, "group": group_s, "kind": kind}
+        )
+        prefix = f"group={group_s} package={query} version={version} origin={origin}"
+        if kind == "third-party":
+            if configured_repo_for(origin.split(" ", 1)[0], repo_urls) is None:
+                failures.append(f"{prefix}: unexpected origin (not a configured third-party repo)")
+        elif kind != "debian":
+            failures.append(f"{prefix}: installed version is served by no configured apt repo ({kind})")
+    for token, spec in missing:
+        name, _, arch = spec.partition(":")
+        rows.append(
+            {"package": spec, "version": "(not installed)", "arch": arch or native_arch, "origin": "-",
+             "group": token, "kind": "missing"}
+        )
+        failures.append(f"group={token} package={spec} version=(not installed) origin=-: missing")
+    if not install_time:
+        failures.append("no install-time packages found (installed disk equals the live rootfs package list)")
+    return {"rows": rows, "failures": failures}
+
+
+def format_install_components_tsv(rows: list[dict[str, str]]) -> str:
+    """install-components.tsv: header + one `package version arch origin group` row per component."""
+    columns = ("package", "version", "arch", "origin", "group")
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(str(row.get(c, "")).replace("\t", " ").replace("\n", " ") for c in columns))
+    return "\n".join(lines) + "\n"
+
+
+def capture_guest_package_list(qga_socket: pathlib.Path) -> dict[str, Any]:
+    """Run build_package_list_script in the guest: {native, packages} or {error}."""
+    try:
+        res = run_guest_exec(build_package_list_script(), timeout=INSTALLED_CHECKS_TIMEOUT_SEC, qga_socket=qga_socket)
+    except subprocess.TimeoutExpired:
+        return {"error": f"dpkg-query timed out after {INSTALLED_CHECKS_TIMEOUT_SEC}s"}
+    except OSError as exc:
+        return {"error": f"guest-agent exec failed: {exc}"}
+    if res.returncode != 0:
+        return {"error": f"dpkg-query exit {res.returncode}: {(res.stderr or res.stdout).strip()[:300]}"}
+    native, packages = parse_package_list(res.stdout)
+    if native is None or not packages:
+        return {"error": f"dpkg-query listed {len(packages)} installed packages, native arch {native!r}"}
+    return {"native": native, "packages": packages}
+
+
+def verify_install_time_components(
+    groups: list[dict[str, Any]],
+    live_capture: dict[str, Any] | None,
+    overlay_record: dict[str, Any] | None,
+    debian_mirror: str,
+    repo_urls: list[str],
+    *,
+    qga_socket: pathlib.Path,
+    artifacts_dir: pathlib.Path = ARTIFACTS_DIR,
+    ts: str = "",
+) -> dict[str, Any]:
+    """
+    M7_INSTALL_TIME_COMPONENTS on the booted installed disk (guest agent), after M6: diff the
+    installed packages against the live rootfs list captured before install, drop the test
+    overlay's harness-only packages, read each one's `***` origin from `apt-cache policy`, and
+    write install-components.tsv (package, version, arch, origin, group) to the artifacts dir.
+    """
+    result: dict[str, Any] = {"id": "M7_INSTALL_TIME_COMPONENTS", "passed": False, "repos": repo_urls}
+
+    def fail(detail: str) -> dict[str, Any]:
+        result["detail"] = detail
+        result.setdefault("failures", [detail])
+        return result
+
+    if not live_capture or "packages" not in live_capture:
+        return fail(f"live rootfs package list unavailable: {(live_capture or {}).get('error', 'not captured')}")
+    manifest = (overlay_record or {}).get("manifest")
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("packages"), list):
+        return fail(
+            f"test overlay manifest {TEST_OVERLAY_MANIFEST} unavailable: "
+            f"{(overlay_record or {}).get('manifest_error', 'no packages list')}"
+        )
+    overlay_names = {str(p["package"]) for p in manifest["packages"] if isinstance(p, dict) and "package" in p}
+    result["harness_only_excluded"] = sorted(overlay_names)
+
+    installed = capture_guest_package_list(qga_socket)
+    if "packages" not in installed:
+        return fail(f"installed package list unavailable: {installed['error']}")
+    native = str(installed["native"])
+    queries = install_time_policy_queries(live_capture["packages"], installed["packages"], overlay_names, native)
+    policy_text = ""
+    if queries:
+        script = (
+            f"export LC_ALL=C PATH={shlex.quote(INSTALLED_CHECKS_PATH)}\n"
+            "apt-cache policy " + " ".join(shlex.quote(q) for q in queries) + "\n"
+        )
+        try:
+            res = run_guest_exec(script, timeout=INSTALLED_CHECKS_TIMEOUT_SEC, qga_socket=qga_socket)
+        except subprocess.TimeoutExpired:
+            return fail(f"apt-cache policy timed out after {INSTALLED_CHECKS_TIMEOUT_SEC}s")
+        except OSError as exc:
+            return fail(f"apt-cache policy: guest-agent exec failed: {exc}")
+        if res.returncode != 0:
+            return fail(f"apt-cache policy exit {res.returncode}: {(res.stderr or res.stdout).strip()[:300]}")
+        policy_text = res.stdout
+
+    evaluation = evaluate_install_time_components(
+        groups,
+        live_capture["packages"],
+        installed["packages"],
+        overlay_names,
+        parse_apt_cache_policy(policy_text, native),
+        native,
+        debian_mirror,
+        repo_urls,
+    )
+    rows, failures = evaluation["rows"], evaluation["failures"]
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    tsv_text = format_install_components_tsv(rows)
+    tsv_path = artifacts_dir / (f"{ts}-install-e2e-{INSTALL_COMPONENTS_TSV}" if ts else INSTALL_COMPONENTS_TSV)
+    tsv_path.write_text(tsv_text, encoding="utf-8")
+    canonical = artifacts_dir / INSTALL_COMPONENTS_TSV
+    if canonical != tsv_path:
+        canonical.write_text(tsv_text, encoding="utf-8")
+
+    third_party = [r for r in rows if r["kind"] == "third-party"]
+    result.update(
+        {
+            "passed": not failures,
+            "failures": failures,
+            "install_time_count": sum(1 for r in rows if r["kind"] != "missing"),
+            "third_party": third_party,
+            "tsv": str(tsv_path),
+            "tsv_canonical": str(canonical),
+        }
+    )
+    result["detail"] = (
+        f"{result['install_time_count']} install-time packages ({len(third_party)} third-party: "
+        + ", ".join(f"{r['package']} {r['version']} [{r['origin']}]" for r in third_party[:10])
+        + f"); {canonical}"
+        if not failures
+        else f"{len(failures)} failures: " + "; ".join(failures[:20])
+        + (f"; ... {len(failures) - 20} more" if len(failures) > 20 else "")
+        + f"; {canonical}"
+    )
+    return result
+
+
 # ==============================================================================
 # 6. Main Orchestration Loop (`run_harness`)
 # ==============================================================================
@@ -2136,12 +2500,15 @@ def run_harness(args: argparse.Namespace) -> int:
     install_groups: list[dict[str, Any]] = []
     install_profiles: list[str] = []
     custom_tools: dict[str, dict[str, Any]] = {}
+    debian_mirror = build_cfg.get("DEBIAN_MIRROR") or DEFAULT_DEBIAN_MIRROR
+    third_party_repos: list[str] = []
     if tier == "install-e2e":
         try:
             install_cfg = load_calamares_install_config()
             install_groups = resolve_install_groups(args.groups, install_cfg["netinstall"])
             install_profiles = install_group_profiles(install_groups)
             custom_tools = load_custom_tools_manifest()
+            third_party_repos = load_third_party_repo_urls(debian_mirror)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             print(f"[ERROR] install-e2e Calamares configuration: {exc}", file=sys.stderr)
             return EXIT_ERROR
@@ -2237,6 +2604,8 @@ def run_harness(args: argparse.Namespace) -> int:
                 "profiles": install_profiles,
                 "shellprocess_conf": install_cfg["shellprocess_conf"],
                 "test_user": INSTALL_E2E_TEST_USER,
+                "debian_mirror": debian_mirror,
+                "third_party_repos": third_party_repos,
             }
         print(json.dumps(dry_payload, indent=2))
         return EXIT_OK
@@ -2246,6 +2615,7 @@ def run_harness(args: argparse.Namespace) -> int:
     completed_milestones: list[dict[str, Any]] = []
     screendumps: list[dict[str, Any]] = []
     test_overlay_record: dict[str, Any] | None = None
+    live_package_list: dict[str, Any] | None = None
     status = "fail"
     error_summary = ""
 
@@ -2302,6 +2672,9 @@ def run_harness(args: argparse.Namespace) -> int:
 
         # Verdict record: test overlay manifest + production filesystem.squashfs sha256 (live guest)
         test_overlay_record = collect_test_overlay_record(qga_socket)
+        if tier == "install-e2e":
+            # M7 baseline (STEP 15E): the live rootfs package list, captured before anything is installed.
+            live_package_list = capture_guest_package_list(qga_socket)
 
         # Tier 1 Milestone 4: Capture final QMP screendump
         sd_live = capture_qmp_screendump(
@@ -2397,6 +2770,20 @@ def run_harness(args: argparse.Namespace) -> int:
             completed_milestones.append(installed_checks)
             if not installed_checks["passed"]:
                 raise RuntimeError(f"M6_INSTALLED_CHECKS failed: {installed_checks['detail']}")
+
+            # M7_INSTALL_TIME_COMPONENTS (STEP 15E): install-time packages, versions and origins.
+            components = verify_install_time_components(
+                install_groups,
+                live_package_list,
+                test_overlay_record,
+                debian_mirror,
+                third_party_repos,
+                qga_socket=qga_socket,
+                ts=ts,
+            )
+            completed_milestones.append(components)
+            if not components["passed"]:
+                raise RuntimeError(f"M7_INSTALL_TIME_COMPONENTS failed: {components['detail']}")
 
         status = "pass"
     except Exception as exc:
@@ -2560,7 +2947,8 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         plan_e2e = build_milestone_plan("install-e2e")
         self.assertEqual(len(plan_live), 4)
         # 4 live-boot + 6 install sub-steps (5 Calamares + harness-only test agent) + reboot + checks
-        self.assertEqual(len(plan_e2e), 12)
+        # + install-time components
+        self.assertEqual(len(plan_e2e), 13)
         self.assertEqual(
             [m["id"] for m in plan_e2e[4:]],
             [
@@ -2572,6 +2960,7 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
                 "M5_INSTALL_TEST_AGENT",
                 "M6_REBOOT_INSTALLED_VDA",
                 "M6_INSTALLED_CHECKS",
+                "M7_INSTALL_TIME_COMPONENTS",
             ],
         )
         self.assertTrue(plan_e2e[9]["harness_only"])
@@ -2644,6 +3033,150 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         for script in (part, build_install_rootfs_script(cfg, {}, INSTALL_E2E_TEST_USER), net, boot, agent):
             res = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
             self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_install_time_components_origin_and_tsv(self) -> None:
+        mirror = "http://deb.debian.org/debian"
+        repos = load_third_party_repo_urls(mirror)
+        for expected in (
+            "https://pkgs.tailscale.com/stable/debian",
+            "https://download.docker.com/linux/debian",
+            "https://packages.microsoft.com/repos/code",
+            "https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev",
+            "http://deb.xanmod.org",
+            "file:/usr/share/novos/apt-markers",
+        ):
+            self.assertIn(expected, repos)
+        self.assertFalse([r for r in repos if "debian.org" in r or "$" in r])
+        self.assertEqual(
+            configured_repo_for("https://pkgs.tailscale.com/stable/debian/", repos),
+            "https://pkgs.tailscale.com/stable/debian",
+        )
+        self.assertIsNone(configured_repo_for("https://pkgs.tailscale.com.evil.example/x", repos))
+        self.assertTrue(is_debian_source("https://snapshot.debian.org/archive/debian/20261107T205437Z", mirror))
+
+        live_native, live = parse_package_list(
+            "A\tamd64\n"
+            "P\tii \tbash\tamd64\t5.2\n"
+            "P\tii \tqemu-guest-agent\tamd64\t1:10.1\n"
+            "P\trc \told-conf\tamd64\t1.0\n"
+        )
+        self.assertEqual(live_native, "amd64")
+        self.assertEqual(set(live), {("bash", "amd64"), ("qemu-guest-agent", "amd64")})
+        _native, installed = parse_package_list(
+            "A\tamd64\n"
+            "P\tii \tbash\tamd64\t5.2\n"
+            "P\tii \tqemu-guest-agent\tamd64\t1:10.1\n"
+            "P\tii \tliburing2\tamd64\t2.9\n"
+            "P\tii \ttailscale\tamd64\t1.104.5\n"
+            "P\tii \tneovim\tamd64\t0.11\n"
+            "P\thi \tlibfoo\ti386\t1.0\n"
+            "P\tii \tlocalpkg\tall\t0.1\n"
+            "P\tii \trogue\tamd64\t9.9\n"
+            "P\tii \toldtp\tamd64\t1.0\n"
+        )
+        overlay = {"qemu-guest-agent", "liburing2"}
+        queries = install_time_policy_queries(live, installed, overlay, "amd64")
+        self.assertEqual(queries, ["libfoo:i386", "localpkg", "neovim", "oldtp", "rogue", "tailscale"])
+
+        policy = parse_apt_cache_policy(
+            "tailscale:\n"
+            "  Installed: 1.104.5\n"
+            "  Candidate: 1.104.5\n"
+            "  Version table:\n"
+            " *** 1.104.5 500\n"
+            "        500 https://pkgs.tailscale.com/stable/debian sid/main amd64 Packages\n"
+            "        100 /var/lib/dpkg/status\n"
+            "     1.104.4 500\n"
+            "        500 https://pkgs.tailscale.com/stable/debian sid/main amd64 Packages\n"
+            "neovim:\n"
+            "  Installed: 0.11\n"
+            "  Candidate: 0.11\n"
+            "  Version table:\n"
+            " *** 0.11 500\n"
+            "        500 http://deb.debian.org/debian sid/main amd64 Packages\n"
+            "        100 /var/lib/dpkg/status\n"
+            "libfoo:i386:\n"
+            "  Installed: 1.0\n"
+            "  Candidate: 1.0\n"
+            "  Version table:\n"
+            " *** 1.0 500\n"
+            "        500 http://deb.debian.org/debian sid/main i386 Packages\n"
+            "        100 /var/lib/dpkg/status\n"
+            "localpkg:\n"
+            "  Installed: 0.1\n"
+            "  Candidate: 0.1\n"
+            "  Version table:\n"
+            " *** 0.1 100\n"
+            "        100 /var/lib/dpkg/status\n"
+            "rogue:amd64:\n"
+            "  Installed: 9.9\n"
+            "  Candidate: 9.9\n"
+            "  Version table:\n"
+            " *** 9.9 500\n"
+            "        500 https://evil.example/repo stable/main amd64 Packages\n"
+            "        100 /var/lib/dpkg/status\n"
+            "oldtp:\n"
+            "  Installed: 1.0\n"
+            "  Candidate: 1.1\n"
+            "  Version table:\n"
+            "     1.1 500\n"
+            "        500 https://download.docker.com/linux/debian trixie/stable amd64 Packages\n"
+            " *** 1.0 100\n"
+            "        100 /var/lib/dpkg/status\n",
+            "amd64",
+        )
+        self.assertIn("rogue", policy)
+        self.assertEqual(policy["tailscale"]["versions"][0]["sources"][0], ("https://pkgs.tailscale.com/stable/debian", "sid/main"))
+        self.assertEqual(
+            classify_policy_origin(policy["tailscale"], mirror),
+            ("third-party", "https://pkgs.tailscale.com/stable/debian sid/main"),
+        )
+        self.assertEqual(classify_policy_origin(policy["neovim"], mirror)[0], "debian")
+        self.assertEqual(classify_policy_origin(policy["localpkg"], mirror), ("local", DPKG_STATUS_SOURCE))
+        self.assertEqual(classify_policy_origin(policy["oldtp"], mirror)[0], "third-party")
+
+        groups = [
+            {"token": "network", "name": "Net", "packages": ["tailscale", "bash", "nope"]},
+            {"token": "dev", "name": "Dev", "packages": ["neovim", "oldtp", "tailscale"]},
+        ]
+        ev = evaluate_install_time_components(groups, live, installed, overlay, policy, "amd64", mirror, repos)
+        rows = {r["package"]: r for r in ev["rows"]}
+        self.assertNotIn("qemu-guest-agent", rows)
+        self.assertNotIn("liburing2", rows)
+        self.assertNotIn("bash", rows)  # in the live rootfs: not install-time
+        self.assertEqual(rows["tailscale"]["group"], "network,dev")
+        self.assertTrue(rows["tailscale"]["origin"].startswith("https://pkgs.tailscale.com/"))
+        self.assertEqual(rows["libfoo:i386"]["group"], "-")
+        self.assertEqual(rows["nope"]["version"], "(not installed)")
+        failures = "\n".join(ev["failures"])
+        self.assertIn("group=network package=nope version=(not installed) origin=-: missing", failures)
+        self.assertIn("package=rogue version=9.9 origin=https://evil.example/repo stable/main: unexpected origin", failures)
+        self.assertIn("package=localpkg version=0.1 origin=/var/lib/dpkg/status", failures)
+        self.assertNotIn("package=tailscale", failures)
+        self.assertNotIn("package=oldtp", failures)
+        self.assertNotIn("package=neovim", failures)
+        self.assertEqual(len(ev["failures"]), 3)
+
+        empty = evaluate_install_time_components([], live, dict(live), set(), {}, "amd64", mirror, repos)
+        self.assertIn("no install-time packages", empty["failures"][0])
+
+        tsv = format_install_components_tsv(ev["rows"]).splitlines()
+        self.assertEqual(tsv[0], "package\tversion\tarch\torigin\tgroup")
+        self.assertIn(
+            "tailscale\t1.104.5\tamd64\thttps://pkgs.tailscale.com/stable/debian sid/main\tnetwork,dev", tsv
+        )
+        res = subprocess.run(["bash", "-n"], input=build_package_list_script(), text=True, capture_output=True, check=False)
+        self.assertEqual(res.returncode, 0, res.stderr)
+
+        # Missing inputs fail M7 before any guest call.
+        sock = pathlib.Path("/nonexistent/novos-qga.sock")
+        no_live = verify_install_time_components(groups, None, {}, mirror, repos, qga_socket=sock)
+        self.assertFalse(no_live["passed"])
+        self.assertIn("live rootfs package list unavailable", no_live["detail"])
+        no_manifest = verify_install_time_components(
+            groups, {"native": "amd64", "packages": live}, {"manifest_error": "exit 1"}, mirror, repos, qga_socket=sock
+        )
+        self.assertIn(TEST_OVERLAY_MANIFEST, no_manifest["detail"])
 
     def test_ovmf_locator_and_qemu_command_construction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
