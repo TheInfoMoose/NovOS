@@ -109,6 +109,7 @@
 * **Before 15J:** the shipped `/etc/resolv.conf` form. Recommended: absent from `filesystem.squashfs` (NetworkManager creates it at boot; Calamares `networkcfg` copies the live one into the target). Alternative: a symlink to `/run/NetworkManager/resolv.conf` (NM `rc-manager=symlink` then leaves `/etc` untouched, but `networkcfg` copies the symlink itself, `follow_symlinks=False`, so the target chroot would get a dangling link until boot and the `--pre-packages` 1.1.1.1 fallback would run). 15J is written for "absent"; change MUTATION_SPEC 1 if you choose otherwise. **Decided 2026-11-08: absent.**
 * **Found 2026-11-08 (ppp drop):** the 15J verification build failed the install-e2e variance lock: `ppp` (golden 2.5.2-1+2) and `libpcap0.8t64` (golden 1.11.0-1) were missing from the live OS. Neither is declared anywhere; `ppp` came only as a Recommends of `network-manager` in the Stage 3.2 install (`03-core-system.sh:62-67`), and `libpcap0.8t64` only as a dependency of `ppp`. Sid published `ppp` 2.5.5-1+1 at 2026-11-08 14:41 UTC (snapshot.debian.org first_seen); Stage 3 ran at 16:46 UTC and installed every other `network-manager` Recommends but not `ppp`. apt skips an uninstallable Recommends silently, so the mid-transition gap was invisible to the build. Fix: declare `ppp` explicitly (STEP 15K), so an uninstallable `ppp` fails Stage 3 and Stage 5 `check-apt` instead of dropping. `libpcap0.8t64` stays undeclared (a library pulled by `ppp`'s Depends). 15K's fresh build also completes 15J's pending verification.
 * **Found 2026-11-08 (ppp conflict, after 15K):** the next fresh build failed Stage 3.2 as 15K intended: sid `network-manager` 1.58.1-1 declares `Breaks: ppp (>= 2.5.2-2~), ppp (<< 2.5.2-1+~)` (its ppp plugin is ABI-tied), and sid's only `ppp` is now 2.5.5-1+1. That Breaks is why the earlier build dropped the Recommends. **Decided 2026-11-08: pin `ppp` to the golden 2.5.2-1+2** from snapshot.debian.org `20261107T205437Z` (the last snapshot before the 2.5.5 upload; verified to carry ppp 2.5.2-1+2, network-manager 1.58.1-1 and libpcap0.8t64 1.11.0-1), for that one package only (STEP 15L). The pin is build-time only: the image ships no snapshot source. Remove it (clear `NOVOS_PINNED_PACKAGES`) once sid's `network-manager` accepts sid's `ppp`; each build prints the sid candidate so the gap stays visible. 12A/12B later generalise this.
+* **Found 2026-11-08 (stale manifest counts):** after 10B, `verify-deps.sh --self-test` fails in `cargo test --workspace`: `crates/novos-custom-tools/src/packages.rs:1391` `real_manifest_loads_and_validates` asserts `entries == 286` / `unique_packages == 256`, but 15K's `ppp` entry made the real manifest 287 / 257 (`packages validate` reports both). 15K's POST_GATE ran `packages validate`, not `cargo test`, so the Rust gate has been red since 545983a. Fixed by STEP 15M.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -123,24 +124,23 @@
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
-| 2 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
-| 3 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
-| 4 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
-| 5 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
-| 6 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
-| 7 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
-| 8 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
-| 9 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
-| 10 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
-| 11 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
-| 12 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
-| 13 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
-| 14 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
-| 15 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
-| 16 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
-| 17 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
-| 18 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+| 1 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
+| 2 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
+| 3 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
+| 4 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
+| 5 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 6 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 7 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 8 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 9 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 10 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 11 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 12 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 13 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 14 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 15 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 16 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 17 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
 
 Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
 
@@ -186,6 +186,8 @@ Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile
 | **STEP 15C** | COMPLETED (user run 2026-11-08: M6_INSTALLED_CHECKS 66/66 for dev,network: 58 apt packages installed, zig 0.17.1, /opt/zig 0:0, tailscale 1.104.5) | `/goal` | install-e2e M6_INSTALLED_CHECKS: --groups profiles' apt packages installed (dpkg-query), `zig version` == manifest, /opt/zig 0:0, /usr/local/bin/zig into /opt/zig, `tailscale version` | `scripts/test-docker-qemu.py` |
 | **STEP 15E** | COMPLETED (user run 2026-11-08: M7 pass, 773 install-time packages, 10 third-party; tailscale 1.104.5 from pkgs.tailscale.com; install-components.tsv written) | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
 | **STEP 10A** | COMPLETED **[USER BUILD] pending** (proven by the fresh build after 10F) | `/goal` | Wire ISO variance lock into build: verify-variance after Stage 6; drop/downgrade renames ISO to `.REJECTED.iso` and exits with its code; upgrades reported | `scripts/build-novos.sh` |
+| **STEP 10B** | COMPLETED (POST_GATE 0: 177 suppressions, 1 baselined forbidden `--force-depends` at 05-profiles-installer.sh:760) | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
+| **STEP 15M** | COMPLETED (POST_GATE 0: fmt, clippy, cargo test, verify-deps --self-test) | `/goal` | Update stale manifest counts in the packages.rs real-manifest test (287 entries / 257 unique after 15K's ppp) | `crates/novos-custom-tools/src/packages.rs` |
 
 ---
 
@@ -1129,14 +1131,47 @@ FORBIDDEN_SCOPE:
 test ! -e config/suppression-baseline.toml
 
 [MUTATION_SPEC]
-1. Suppression = line matching `\|\| (true|:)\b` or `set \+e` without `# novos-allow:`. Generate config/suppression-baseline.toml with current per-file counts for scripts/build-novos.sh, scripts/stages/*.sh, scripts/lib/verify-deps.sh, calamares/modules/*.conf. Header: "Ratchet: counts may only decrease. Editing requires the active step to list this file."
-2. verify-deps.sh: `check_suppression_ratchet` (fail if any file exceeds baseline or a new file has >0) and `check_forbidden_patterns` (fail on `trusted=yes` except the novos-markers.list line, `--force-depends`, `equivs`, `0.0.1~novos`, `--from-stage` outside mcp_nebulous_ci.py's guard). Both run in run_self_test and in verify_host_deps (pre-build).
+1. Suppression = line matching `\|\| (true|:)\b` or `set \+e` without `# novos-allow:`. Generate config/suppression-baseline.toml with current per-file counts for scripts/build-novos.sh, scripts/stages/*.sh, scripts/lib/verify-deps.sh, calamares/modules/*.conf, in a `[suppressions]` table. Header: "Ratchet: counts may only decrease. Editing requires the active step to list this file."
+2. Same file, `[forbidden]` table (amended 2026-11-08): current per-file count of forbidden-pattern lines (`trusted=yes` except the novos-markers.list line, `--force-depends`, `equivs`, `0.0.1~novos`, `--from-stage` outside mcp_nebulous_ci.py's guard), over the same file set. The only entry expected today is `"scripts/stages/05-profiles-installer.sh" = 1` (safe_apt_purge `dpkg --purge --force-depends`, :760; removed by 10E). Any other non-zero count found: report file:line and halt.
+3. verify-deps.sh: `check_suppression_ratchet` (fail if any file exceeds its `[suppressions]` count or a new file has >0) and `check_forbidden_patterns` (fail if any file exceeds its `[forbidden]` count or a file absent from the table has >0; every match is printed as file:line, and baselined ones are labelled as such). Generator and checks share one regex per rule. Both run in run_self_test and in verify_host_deps (pre-build).
 
 [POST_GATE]
 bash -n scripts/lib/verify-deps.sh && python3 -c 'import tomllib;tomllib.load(open("config/suppression-baseline.toml","rb"))' && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet && check_forbidden_patterns'
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+### STEP 15M: Update Stale Manifest Counts in the packages.rs Test
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15M: real_manifest_loads_and_validates expects the current config/packages.yaml totals (287 entries, 257 unique packages) after 15K added ppp
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/novos-custom-tools/src/packages.rs
+READ_ONLY_REFS:
+  - config/packages.yaml (15K ppp entry)
+  - Open Questions: "Found 2026-11-08 (stale manifest counts)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No assertion removed or loosened (no `>=`, no `#[ignore]`, no `#[allow]`); groups 17 / subgroups 38 stay as they are. config/packages.yaml unchanged.
+
+[PRE_GATE]
+grep -qF 'assert_eq!(s.entries, 286);' crates/novos-custom-tools/src/packages.rs && grep -qF 'assert_eq!(s.unique_packages, 256);' crates/novos-custom-tools/src/packages.rs && grep -qF '{name: ppp, source: apt, arch: amd64, required: true' config/packages.yaml
+
+[MUTATION_SPEC]
+1. packages.rs real_manifest_loads_and_validates: `assert_eq!(s.entries, 286);` → `assert_eq!(s.entries, 287);` and `assert_eq!(s.unique_packages, 256);` → `assert_eq!(s.unique_packages, 257);`. Nothing else.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1 && cargo test --workspace > /dev/null 2>&1 && ./scripts/lib/verify-deps.sh --self-test > /dev/null 2>&1
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. No user build needed (test-only change).
 ```
 
 ---
@@ -1229,10 +1264,10 @@ bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet' && grep
 
 [MUTATION_SPEC]
 1. Same rules as 10C. In novos-setup runtime paths, failures that must not abort an install are routed to the failure TSV with a reason. safe_apt_purge: drop the `dpkg --purge --force-depends` fallback.
-2. Lower the file's baseline (target 0).
+2. Lower the file's `[suppressions]` baseline (target 0) and set its `[forbidden]` count to 0 (amended 2026-11-08).
 
 [POST_GATE]
-bash -n scripts/stages/05-profiles-installer.sh && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet && check_forbidden_patterns' && test "$(grep -E '\|\| (true|:)' scripts/stages/05-profiles-installer.sh | grep -vc 'novos-allow:')" -eq 0
+bash -n scripts/stages/05-profiles-installer.sh && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet && check_forbidden_patterns' && test "$(grep -E '\|\| (true|:)' scripts/stages/05-profiles-installer.sh | grep -vc 'novos-allow:')" -eq 0 && ! grep -q -- '--force-depends' scripts/stages/05-profiles-installer.sh
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
