@@ -606,6 +606,16 @@ for sub in dev sys proc run; do
     fi
 done
 
+# The build chroot's /etc/resolv.conf is a copy of the build host's (often the 127.0.0.53
+# systemd-resolved stub, useless inside the image). Ship none: the live system gets one from
+# NetworkManager, and Calamares networkcfg copies the live one into the install target.
+rm -f "${MOUNT_ROOT}/etc/resolv.conf"
+if [[ -e "${MOUNT_ROOT}/etc/resolv.conf" || -L "${MOUNT_ROOT}/etc/resolv.conf" ]]; then
+    echo "[FATAL] build-time /etc/resolv.conf still in the rootfs" >&2
+    exit 1
+fi
+echo "[OK]   /etc/resolv.conf removed from the image (NetworkManager writes it at boot)"
+
 mkdir -p "${MOUNT_ROOT}"/{dev,proc,sys,run,tmp,boot/efi,.snapshots}
 chmod 1777 "${MOUNT_ROOT}/tmp"
 chmod 0755 "${MOUNT_ROOT}"/{dev,proc,sys,run,boot/efi,.snapshots}

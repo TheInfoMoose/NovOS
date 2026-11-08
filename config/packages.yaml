@@ -47,6 +47,7 @@ groups:
       - {name: snapper, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - {name: dracut, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - {name: network-manager, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
+      - {name: ppp, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - {name: inotify-tools, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - {name: gawk, source: apt, arch: amd64, required: true, alternative: null, smoke: null}
       - {name: coreutils, source: apt, arch: amd64, required: true, alternative: null, smoke: null}

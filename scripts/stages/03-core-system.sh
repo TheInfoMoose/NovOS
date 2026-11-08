@@ -56,15 +56,83 @@ Pin: release *
 Pin-Priority: 1000
 EOF
 
+# Build-time snapshot pin (config/build.env NOVOS_PINNED_PACKAGES): hold each name=version at a
+# signed snapshot.debian.org timestamp for the Stage 3.2 install; removed again after it.
+if [[ -n "${NOVOS_PINNED_PACKAGES:-}" ]]; then
+    if [[ ! "${NOVOS_PIN_SNAPSHOT:-}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+        echo "[FATAL] NOVOS_PIN_SNAPSHOT '${NOVOS_PIN_SNAPSHOT:-}' is not a snapshot.debian.org timestamp (YYYYMMDDTHHMMSSZ)." >&2
+        exit 1
+    fi
+    if [[ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]]; then
+        echo "[FATAL] /usr/share/keyrings/debian-archive-keyring.gpg missing; cannot verify the snapshot pin source." >&2
+        exit 1
+    fi
+    read -r -a novos_pin_entries <<< "${NOVOS_PINNED_PACKAGES}"
+    for entry in "${novos_pin_entries[@]}"; do
+        if [[ ! "${entry}" =~ ^[a-z0-9][a-z0-9.+-]*=[A-Za-z0-9.+:~-]+$ ]]; then
+            echo "[FATAL] NOVOS_PINNED_PACKAGES entry '${entry}' is not of the form name=version." >&2
+            exit 1
+        fi
+    done
+
+    # Signature is still verified against the Debian archive keyring; only Valid-Until is waived
+    # because the snapshot Release file is frozen.
+    echo "deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/${NOVOS_PIN_SNAPSHOT}/ ${DEBIAN_SUITE} main" \
+        > /etc/apt/sources.list.d/novos-snapshot-pin.list
+
+    : > /etc/apt/preferences.d/10-novos-snapshot-pins
+    for entry in "${novos_pin_entries[@]}"; do
+        pin_name="${entry%%=*}"
+        pin_version="${entry#*=}"
+        printf 'Package: %s\nPin: version %s\nPin-Priority: 1001\n\n' "${pin_name}" "${pin_version}" \
+            >> /etc/apt/preferences.d/10-novos-snapshot-pins
+    done
+    printf 'Package: *\nPin: origin snapshot.debian.org\nPin-Priority: 100\n' \
+        >> /etc/apt/preferences.d/10-novos-snapshot-pins
+
+    for entry in "${novos_pin_entries[@]}"; do
+        echo "[PIN]  ${entry%%=*} held at ${entry#*=} from snapshot.debian.org ${NOVOS_PIN_SNAPSHOT}"
+    done
+fi
+
 echo "==> [Stage 3.2] Installing Core Base Utilities, PAM Session Stack & Pre-Configuring Third-Party Keyrings..."
 dpkg --add-architecture i386
 apt-get update
+# ppp is declared explicitly: as a network-manager Recommends, apt silently skips it when sid has it
+# uninstallable (2026-11-08 drop); as an explicit package it fails this install instead.
 apt-get install -y --no-remove \
     tzdata locales passwd adduser sudo curl wget gpg ca-certificates git build-essential \
     kmod xz-utils zstd initramfs-tools-core udev klibc-utils busybox \
-    btrfs-progs dosfstools parted fdisk gdisk efibootmgr snapper dracut network-manager inotify-tools gawk coreutils \
+    btrfs-progs dosfstools parted fdisk gdisk efibootmgr snapper dracut network-manager ppp inotify-tools gawk coreutils \
     util-linux util-linux-extra systemd-timesyncd libpam-systemd dbus-user-session polkitd \
     whiptail dialog debconf-utils python3 pciutils usbutils lsb-release
+
+# Verify the snapshot-pinned versions, then drop the snapshot source and pin so the image ships neither.
+if [[ -n "${NOVOS_PINNED_PACKAGES:-}" ]]; then
+    for entry in "${novos_pin_entries[@]}"; do
+        pin_name="${entry%%=*}"
+        pin_version="${entry#*=}"
+        pin_got="$(dpkg-query -W -f='${Version}' "${pin_name}")"
+        if [[ "${pin_got}" != "${pin_version}" ]]; then
+            echo "[FATAL] ${pin_name} installed ${pin_got}, pin requires ${pin_version}" >&2
+            exit 1
+        fi
+    done
+
+    rm -f /etc/apt/sources.list.d/novos-snapshot-pin.list /etc/apt/preferences.d/10-novos-snapshot-pins
+    apt-get update
+    if [[ -e /etc/apt/sources.list.d/novos-snapshot-pin.list || -e /etc/apt/preferences.d/10-novos-snapshot-pins ]]; then
+        echo "[FATAL] snapshot pin source or preference still present after removal." >&2
+        exit 1
+    fi
+
+    for entry in "${novos_pin_entries[@]}"; do
+        pin_name="${entry%%=*}"
+        pin_candidate="$(apt-cache policy "${pin_name}" | awk '/^  Candidate:/ {print $2}')"
+        echo "[PIN]  ${pin_name} ${entry#*=} installed; sid candidate now: ${pin_candidate}"
+    done
+    echo "[OK]   snapshot pin source removed (not shipped)"
+fi
 
 # Preseed non-interactive debconf defaults so Calamares' packages module (which runs apt-get without
 # DEBIAN_FRONTEND=noninteractive) never hangs on whiptail/dialog prompts (e.g. wireshark-common at 85% or samba-common)

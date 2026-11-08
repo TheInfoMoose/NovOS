@@ -106,7 +106,9 @@
 * **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect. **Verified 2026-11-07** (user boot of `NovOS-sid-amd64-test.iso`): both layers mounted, overlay lowerdir `zz-novos-test.squashfs:filesystem.squashfs`, `qemu-guest-agent` active, `guest-ping` answered.
 * **Found 2026-11-07 (Limine auto-boot):** the same boot sat at the Limine menu until Down+Enter was sent. Both generated configs use `default_entry: 1`, which selects the `/+…` directory line, so the timeout never boots anything; this also stalls every unattended harness run (likely the install-e2e M2 timeout) and real installed systems. Fixed by STEP 15H, ordered before 15G.
 * **Found 2026-11-08 (install-e2e netinstall DNS):** the first install-e2e run over the guest agent (15G) passed M1–M5_INSTALL_ROOTFS, then failed M5_INSTALL_NETINSTALL with "Unable to locate package" for every package. One-off diagnostics over the agent showed the live guest's network is fine (DHCP, NetworkManager `nameserver 10.0.2.3`, strict `apt-get update` rc 0), but in the target chroot every fetch fails with "Temporary failure resolving". Cause: `filesystem.squashfs` ships the build host's systemd-resolved stub as a regular file `/etc/resolv.conf` (`nameserver 127.0.0.53`), because `mount_chroot_pseudo_fs` (`scripts/lib/verify-deps.sh:413-415`) does `cp -L /etc/resolv.conf` into the build chroot and nothing removes it before mksquashfs. The real Calamares `networkcfg` module (ISO copy, `networkcfg/main.py:170-185`) always replaces the target's resolv.conf with the live one, so real installs resolve; the harness's networkcfg reproduction (`[ ! -s ]`) keeps the stale stub, so the harness is unfaithful (STEP 15I). The masking (`apt-get update` exits 0 on fetch warnings; `novos-setup --pre-packages` runs `apt-get update -q || true`, `05-profiles-installer.sh:625`) is already covered by STEP 10E. Shipping the host stub in the image is fixed separately (STEP 15J). 15J changes the production squashfs (fresh build + re-bless); its position is in **Up Next**.
-* **Before 15J:** the shipped `/etc/resolv.conf` form. Recommended: absent from `filesystem.squashfs` (NetworkManager creates it at boot; Calamares `networkcfg` copies the live one into the target). Alternative: a symlink to `/run/NetworkManager/resolv.conf` (NM `rc-manager=symlink` then leaves `/etc` untouched, but `networkcfg` copies the symlink itself, `follow_symlinks=False`, so the target chroot would get a dangling link until boot and the `--pre-packages` 1.1.1.1 fallback would run). 15J is written for "absent"; change MUTATION_SPEC 1 if you choose otherwise.
+* **Before 15J:** the shipped `/etc/resolv.conf` form. Recommended: absent from `filesystem.squashfs` (NetworkManager creates it at boot; Calamares `networkcfg` copies the live one into the target). Alternative: a symlink to `/run/NetworkManager/resolv.conf` (NM `rc-manager=symlink` then leaves `/etc` untouched, but `networkcfg` copies the symlink itself, `follow_symlinks=False`, so the target chroot would get a dangling link until boot and the `--pre-packages` 1.1.1.1 fallback would run). 15J is written for "absent"; change MUTATION_SPEC 1 if you choose otherwise. **Decided 2026-11-08: absent.**
+* **Found 2026-11-08 (ppp drop):** the 15J verification build failed the install-e2e variance lock: `ppp` (golden 2.5.2-1+2) and `libpcap0.8t64` (golden 1.11.0-1) were missing from the live OS. Neither is declared anywhere; `ppp` came only as a Recommends of `network-manager` in the Stage 3.2 install (`03-core-system.sh:62-67`), and `libpcap0.8t64` only as a dependency of `ppp`. Sid published `ppp` 2.5.5-1+1 at 2026-11-08 14:41 UTC (snapshot.debian.org first_seen); Stage 3 ran at 16:46 UTC and installed every other `network-manager` Recommends but not `ppp`. apt skips an uninstallable Recommends silently, so the mid-transition gap was invisible to the build. Fix: declare `ppp` explicitly (STEP 15K), so an uninstallable `ppp` fails Stage 3 and Stage 5 `check-apt` instead of dropping. `libpcap0.8t64` stays undeclared (a library pulled by `ppp`'s Depends). 15K's fresh build also completes 15J's pending verification.
+* **Found 2026-11-08 (ppp conflict, after 15K):** the next fresh build failed Stage 3.2 as 15K intended: sid `network-manager` 1.58.1-1 declares `Breaks: ppp (>= 2.5.2-2~), ppp (<< 2.5.2-1+~)` (its ppp plugin is ABI-tied), and sid's only `ppp` is now 2.5.5-1+1. That Breaks is why the earlier build dropped the Recommends. **Decided 2026-11-08: pin `ppp` to the golden 2.5.2-1+2** from snapshot.debian.org `20261107T205437Z` (the last snapshot before the 2.5.5 upload; verified to carry ppp 2.5.2-1+2, network-manager 1.58.1-1 and libpcap0.8t64 1.11.0-1), for that one package only (STEP 15L). The pin is build-time only: the image ships no snapshot source. Remove it (clear `NOVOS_PINNED_PACKAGES`) once sid's `network-manager` accepts sid's `ppp`; each build prints the sid candidate so the gap stays visible. 12A/12B later generalise this.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -121,28 +123,27 @@
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 15J** | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh` | Your answer: "Before 15J" (shipped `/etc/resolv.conf` form). Fresh build after. |
-| 2 | **STEP 15C** | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` | — |
-| 3 | **STEP 15E** | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` | — |
-| 4 | **STEP 10A** | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` | — |
-| 5 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
-| 6 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
-| 7 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
-| 8 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
-| 9 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
-| 10 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
-| 11 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
-| 12 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
-| 13 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
-| 14 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
-| 15 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
-| 16 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
-| 17 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
-| 18 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
-| 19 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
-| 20 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
-| 21 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
-| 22 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+| 1 | **STEP 15C** | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` | — |
+| 2 | **STEP 15E** | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` | — |
+| 3 | **STEP 10A** | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` | — |
+| 4 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
+| 5 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
+| 6 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
+| 7 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
+| 8 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
+| 9 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 10 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 11 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 12 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 13 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 14 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 15 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 16 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 17 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 18 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 19 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 20 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 21 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
 
 Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
 
@@ -182,6 +183,9 @@ Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile
 | **STEP 15H** | COMPLETED (user build 2026-11-08: test ISO auto-booted with no keypress, agent answered in <60 s; installed-system auto-boot verified 2026-11-08 by install-e2e M6, which booted /dev/vda unattended) | `/goal` | Limine `default_entry` boots the first kernel entry, not the menu directory (live ISO + installed system) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh`, `scripts/stages/03-core-system.sh` |
 | **STEP 15G** | COMPLETED (user runs 2026-11-08 on the test ISO: live-boot pass; install-e2e pass after 15I, 11/11 milestones incl. M5_INSTALL_TEST_AGENT and M6 over the agent; overlay `matches_manifest: true`) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
 | **STEP 15I** | COMPLETED (user run 2026-11-08: target resolv.conf `nameserver 10.0.2.3`; netinstall dev,network passed; install-e2e pass, `--skip-variance-check` pending the kernel ABI bless) | `/goal` | install-e2e networkcfg copies the live resolv.conf like Calamares; netinstall fails fast with the apt fetch errors | `scripts/test-docker-qemu.py` |
+| **STEP 15J** | COMPLETED (user build 2026-11-08: filesystem.squashfs has no `etc/resolv.conf`; install-e2e pass incl. M5_INSTALL_NETINSTALL) | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub); Stage 6 removes it before mksquashfs and fails if any remains | `scripts/stages/06-snapshot-finalize.sh` |
+| **STEP 15K** | COMPLETED (first build failed Stage 3.2 loudly on network-manager Breaks ppp, as intended → 15L) | `/goal` | Declare `ppp` explicitly in the base set (no silent Recommends drop) | `scripts/stages/03-core-system.sh`, `config/packages.yaml` |
+| **STEP 15L** | COMPLETED (user build 2026-11-08: ppp 2.5.2-1+2, libpcap0.8t64 1.11.0-1 installed; no snapshot source shipped; variance PASS 0 violations; install-e2e pass) | `/goal` | Build-time snapshot pin: `ppp` held at golden 2.5.2-1+2 from snapshot.debian.org 20261107T205437Z; pin source removed after Stage 3.2 (not shipped) | `config/build.env`, `scripts/stages/03-core-system.sh` |
 
 ---
 
@@ -1948,6 +1952,84 @@ bash -n scripts/stages/06-snapshot-finalize.sh && awk '/before mksquashfs!/{a=NR
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`, then `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso` and the live-boot + install-e2e runs against `./build/NovOS-sid-amd64-test.iso`; verify `unsquashfs -l` of the new filesystem.squashfs lists no `etc/resolv.conf`. The production squashfs changes, so the golden snapshot needs the user's bless afterwards.
+```
+
+---
+
+### STEP 15K: Declare `ppp` Explicitly in the Base Set
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15K: ppp becomes a declared base package (Stage 3.2 install list + config/packages.yaml base-core) so an uninstallable ppp fails the build instead of silently dropping as a network-manager Recommends
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/stages/03-core-system.sh
+  - config/packages.yaml
+READ_ONLY_REFS:
+  - .nebulous/golden-snapshot.toml (ppp = "2.5.2-1+2", libpcap0.8t64 = "1.11.0-1"; protected, never edited)
+  - scripts/stages/05-profiles-installer.sh (Stage 5.1b `packages check-apt --all` resolves every declared apt package)
+  - Open Questions: "Found 2026-11-08 (ppp drop)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. libpcap0.8t64 is not declared (it is ppp's Depends). No other package added, removed or reordered. No `--no-install-recommends` change. No `|| true`.
+
+[PRE_GATE]
+grep -qE '^    btrfs-progs .* network-manager inotify-tools ' scripts/stages/03-core-system.sh && grep -qF '{name: network-manager, source: apt, arch: amd64, required: true' config/packages.yaml && ! grep -qE '(^|[ ,{:])ppp([ ,}]|$)' scripts/stages/03-core-system.sh config/packages.yaml
+
+[MUTATION_SPEC]
+1. 03-core-system.sh Stage 3.2 `apt-get install -y --no-remove` list: add `ppp` directly after `network-manager` on the same line; above the command add a comment: ppp is declared explicitly because as a network-manager Recommends apt silently skips it when sid has it uninstallable (2026-11-08 drop), and an explicit package fails this install instead.
+2. config/packages.yaml group base-core: add `      - {name: ppp, source: apt, arch: amd64, required: true, alternative: null, smoke: null}` directly after the network-manager entry, same indentation and field order.
+
+[POST_GATE]
+bash -n scripts/stages/03-core-system.sh && grep -qE '^    btrfs-progs .* network-manager ppp inotify-tools ' scripts/stages/03-core-system.sh && awk '/\{name: network-manager, source: apt/{a=NR} /\{name: ppp, source: apt, arch: amd64, required: true, alternative: null, smoke: null\}/{b=NR} END{exit !(a && b==a+1)}' config/packages.yaml && cargo build --release --locked -p novos-custom-tools > /dev/null 2>&1 && ./target/release/novos-custom-tools packages validate config/packages.yaml
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`, then `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso` and `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --iso ./build/NovOS-sid-amd64-test.iso`. Expected: the variance check reports no `golden_package_removed` for ppp / libpcap0.8t64 (ppp 2.5.5-1+1 counts as an upgrade), and install-e2e passes M5_INSTALL_NETINSTALL (15J). If Stage 3 fails on ppp, that is the intended loud failure: report it, do not drop ppp.
+```
+
+---
+
+### STEP 15L: Build-Time Snapshot Pin Holds `ppp` at the Golden Version
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15L: Stage 3 installs each package in NOVOS_PINNED_PACKAGES (ppp=2.5.2-1+2) from a signed snapshot.debian.org source at NOVOS_PIN_SNAPSHOT, verifies the installed version, then removes the pin so the image ships no snapshot source
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - config/build.env
+  - scripts/stages/03-core-system.sh
+READ_ONLY_REFS:
+  - .nebulous/golden-snapshot.toml (ppp = "2.5.2-1+2"; protected, never edited)
+  - scripts/stages/02-bootstrap-chroot.sh (debootstrap default variant; the chroot's /usr/share/keyrings/debian-archive-keyring.gpg)
+  - Open Questions: "Found 2026-11-08 (ppp drop)", "Found 2026-11-08 (ppp conflict, after 15K)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. No `trusted=yes`, no `[allow-insecure=yes]`, no `--allow-downgrades`, no `|| true`. ppp stays in the 15K install list and packages.yaml. No other package pinned. The snapshot source never reaches the shipped image.
+
+[PRE_GATE]
+grep -qE '^    btrfs-progs .* network-manager ppp inotify-tools ' scripts/stages/03-core-system.sh && grep -qF '/etc/apt/preferences.d/00-protect-core' scripts/stages/03-core-system.sh && ! grep -q 'NOVOS_PIN' config/build.env scripts/stages/03-core-system.sh
+
+[MUTATION_SPEC]
+1. config/build.env, after DEBIAN_MIRROR: a comment (build-time per-package hold on a snapshot.debian.org timestamp for packages sid cannot currently install together; ppp: sid network-manager 1.58.1-1 Breaks ppp >= 2.5.2-2~ and sid ppp is 2.5.5-1+1; clear NOVOS_PINNED_PACKAGES once sid's network-manager accepts sid's ppp), then `export NOVOS_PIN_SNAPSHOT="20261107T205437Z"` and `export NOVOS_PINNED_PACKAGES="ppp=2.5.2-1+2"` (space-separated name=version).
+2. 03-core-system.sh Stage 3.1, directly after the 00-protect-core heredoc, guarded by `if [[ -n "${NOVOS_PINNED_PACKAGES:-}" ]]`:
+   a. FATAL unless NOVOS_PIN_SNAPSHOT matches `^[0-9]{8}T[0-9]{6}Z$`; FATAL unless `/usr/share/keyrings/debian-archive-keyring.gpg` exists; FATAL on any entry not of the form name=version.
+   b. Write `/etc/apt/sources.list.d/novos-snapshot-pin.list`: `deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/${NOVOS_PIN_SNAPSHOT}/ ${DEBIAN_SUITE} main` (signature still verified; only Valid-Until is waived for the frozen snapshot).
+   c. Write `/etc/apt/preferences.d/10-novos-snapshot-pins`: one stanza per entry (`Package: <name>` / `Pin: version <version>` / `Pin-Priority: 1001`), then `Package: *` / `Pin: origin snapshot.debian.org` / `Pin-Priority: 100` so nothing else comes from the snapshot.
+   d. Echo `[PIN]  <name> held at <version> from snapshot.debian.org ${NOVOS_PIN_SNAPSHOT}` per entry.
+3. 03-core-system.sh, directly after the Stage 3.2 `apt-get install -y --no-remove ...` command, same guard:
+   a. For each entry: `dpkg-query -W -f='${Version}' <name>` must equal <version>, else `[FATAL] <name> installed <got>, pin requires <version>` and exit 1.
+   b. `rm -f` the list and preferences files from 2b/2c, then `apt-get update`; FATAL if either file still exists.
+   c. Per entry echo `[PIN]  <name> <version> installed; sid candidate now: <apt-cache policy <name> Candidate>` and `[OK]   snapshot pin source removed (not shipped)`.
+
+[POST_GATE]
+bash -n config/build.env && bash -n scripts/stages/03-core-system.sh && grep -qx 'export NOVOS_PIN_SNAPSHOT="20261107T205437Z"' config/build.env && grep -qx 'export NOVOS_PINNED_PACKAGES="ppp=2.5.2-1+2"' config/build.env && grep -qF 'check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/${NOVOS_PIN_SNAPSHOT}/' scripts/stages/03-core-system.sh && ! grep -qE 'trusted=yes|allow-insecure|allow-downgrades' scripts/stages/03-core-system.sh && awk '/00-protect-core/{a=NR} /novos-snapshot-pin\.list/{if(!b)b=NR; c=NR} /^apt-get install -y --no-remove/{if(!d)d=NR} /dpkg-query -W -f=/{if(!e)e=NR} END{exit !(a && b && d && e && a<b && b<d && d<e && e<c)}' scripts/stages/03-core-system.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`, then `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso` and `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --iso ./build/NovOS-sid-amd64-test.iso`. Expected: Stage 3 prints the `[PIN]` lines and `[OK]   snapshot pin source removed`; the variance check shows ppp 2.5.2-1+2 and libpcap0.8t64 1.11.0-1 equal to golden; install-e2e passes M5_INSTALL_NETINSTALL (15J). If apt cannot fetch the snapshot or rejects its signature, report it; never weaken the source options.
 ```
 
 ---

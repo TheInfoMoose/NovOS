@@ -50,3 +50,13 @@ error_fingerprint = "none"
 diff_fingerprint = "a3f91c685540b433"
 modified_files = [".nebulous/items/item-001-docker-qemu-ci.toml", "STEPPED_IMPLEMENTATION_PLAN.md", "scripts/test-docker-qemu.py"]
 log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261108T142002Z-install-e2e-reboot-serial.log"
+
+[[attempts]]
+timestamp = "2026-11-08T18:44:32.472278+00:00"
+stage = "install-e2e"
+status = "pass"
+error_summary = "BdsDxe: starting Boot0003 \"NovOS\" from HD(1,GPT,BB4499CA-9D7B-4A1C-B650-13F210A67F68,0x800,0xC00000)/\\EFI\\BOOT\\BOOTX64.EFI"
+error_fingerprint = "none"
+diff_fingerprint = "2259e927eab32f20"
+modified_files = ["STEPPED_IMPLEMENTATION_PLAN.md", "config/build.env", "config/packages.yaml", "scripts/stages/03-core-system.sh", "scripts/stages/06-snapshot-finalize.sh"]
+log_file = "/srv/devshare/NovOS/logs/qemu-artifacts/20261108T184038Z-install-e2e-reboot-serial.log"
