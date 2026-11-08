@@ -15,8 +15,11 @@ source /root/novos-build/scripts/lib/verify-deps.sh
 echo "==> [Stage 4.1] Installing COSMIC Desktop, greetd, tuigreet, PipeWire & Desktop Portals..."
 mkdir -p /run/dbus /usr/share/novos
 if [ -x /usr/bin/dbus-daemon ] && [ ! -e /run/dbus/system_bus_socket ]; then
-    rm -f /run/dbus/pid 2>/dev/null || true
-    /usr/bin/dbus-daemon --system --fork || true
+    rm -f /run/dbus/pid
+    if ! /usr/bin/dbus-daemon --system --fork; then
+        echo "[FATAL] system dbus-daemon failed to start in the chroot; package maintainer scripts need it." >&2
+        exit 1
+    fi
 fi
 if [ -f /etc/apt/apt.conf.d/80snapper ]; then
     mv -f /etc/apt/apt.conf.d/80snapper /usr/share/novos/80snapper.disabled
@@ -29,8 +32,12 @@ if [ ! -c /dev/null ]; then
 fi
 
 apt-get update
-apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y \
-    dictionaries-common aspell aspell-en || true
+# First pass may fail in aspell-autobuildhash (Sid &main::subst bug); it is patched below, then
+# dpkg --configure -a and the second install must succeed.
+if ! apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant=false install -y \
+    dictionaries-common aspell aspell-en; then
+    echo "[WARN] aspell first-pass install failed; patching aspell-autobuildhash and retrying (the retry is fatal)." >&2
+fi
 
 # Guard /usr/sbin/aspell-autobuildhash against Debian Sid's undefined &main::subst bug if /dev/null is ever
 # non-empty or if aspell emits warnings during chroot/Calamares triggers
@@ -76,8 +83,11 @@ for theme_dir in /usr/share/cosmic/com.system76.CosmicTheme.Dark /usr/share/cosm
 done
 
 # CRITICAL FIX: Ensure seatd is NEVER running so libseat1/cosmic-comp uses systemd-logind exclusively
-systemctl disable --now seatd.service 2>/dev/null || true
-systemctl mask seatd.service 2>/dev/null || true
+# seatd.service is optional (only present if the seatd package was pulled in); mask works either way.
+if [[ -e /usr/lib/systemd/system/seatd.service || -e /lib/systemd/system/seatd.service ]]; then
+    systemctl disable seatd.service
+fi
+systemctl mask seatd.service
 
 echo "==> [Stage 4.2] Wiring COSMIC Wayland Session Wrapper (\$XDG_RUNTIME_DIR, Auto-Aspect Wallpaper & User D-Bus Guarantee)..."
 cat << 'EOF' > /usr/local/bin/novos-wallpaper-auto
@@ -98,16 +108,34 @@ WP_16X9="/usr/share/backgrounds/novos/nova-realistic-16x9.png"
 WP_32X9="/usr/share/backgrounds/novos/nova-realistic-32x9.png"
 WP_FALLBACK="/usr/share/backgrounds/novos/nova-wallpaper.png"
 
+# Prints the Path("...") source of a COSMIC background config; prints nothing for a
+# missing/unreadable file or a non-Path source (e.g. Color(...)).
+read_bg_path() {
+    if [[ -r "$1" ]] && grep -qE 'Path\("[^"]+"\)' "$1"; then
+        grep -oE 'Path\("[^"]+"\)' "$1" | sed -E 's/^Path\("(.*)"\)$/\1/'
+    fi
+}
+
+# Prints the first WxH mode of a DRM connector modes file; returns 1 if it has none.
+read_first_mode() {
+    local line=""
+    if [[ -r "$1" ]] && IFS= read -r line < "$1" && [[ "$line" =~ ^([0-9]{3,5}x[0-9]{3,5}) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
 is_user_customized() {
     local bg_file same_file current_src
     for same_file in "${BG_DIR_1}/same-on-all" "${BG_DIR_2}/same-on-all"; do
-        if [[ -f "$same_file" ]] && [[ "$(tr -d '[:space:]' < "$same_file" 2>/dev/null || true)" == "false" ]]; then
+        if [[ -f "$same_file" && -r "$same_file" ]] && [[ "$(tr -d '[:space:]' < "$same_file")" == "false" ]]; then
             return 0
         fi
     done
     for bg_file in "${BG_DIR_1}/all" "${BG_DIR_2}/all"; do
         if [[ -s "$bg_file" ]]; then
-            current_src="$(grep -oE 'Path\("[^"]+"\)' "$bg_file" 2>/dev/null | sed -E 's/^Path\("(.*)"\)$/\1/' || true)"
+            current_src="$(read_bg_path "$bg_file")"
             if [[ -z "$current_src" ]]; then
                 # Non-empty config without Path("...") means user selected Color(...) or custom source
                 return 0
@@ -146,12 +174,13 @@ detect_ultrawide() {
         if command -v cosmic-randr >/dev/null 2>&1; then
             while IFS= read -r mode; do
                 [[ -n "$mode" ]] && modes+=("$mode")
-            done < <(cosmic-randr list 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -i 'current' | grep -oE '[0-9]{3,5}x[0-9]{3,5}' || true)
+            # A process-substitution exit status never reaches set -e; no match just yields no modes.
+            done < <(cosmic-randr list 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -i 'current' | grep -oE '[0-9]{3,5}x[0-9]{3,5}')
         fi
         if [[ "${#modes[@]}" -eq 0 ]] && command -v wlr-randr >/dev/null 2>&1; then
             while IFS= read -r mode; do
                 [[ -n "$mode" ]] && modes+=("$mode")
-            done < <(wlr-randr 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -i 'current' | grep -oE '[0-9]{3,5}x[0-9]{3,5}' || true)
+            done < <(wlr-randr 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -i 'current' | grep -oE '[0-9]{3,5}x[0-9]{3,5}')
         fi
     fi
 
@@ -162,11 +191,12 @@ detect_ultrawide() {
             status_file="${drm_dir}/status"
             modes_file="${drm_dir}/modes"
             [[ -r "$modes_file" ]] || continue
-            if [[ -r "$status_file" ]] && [[ "$(cat "$status_file" 2>/dev/null || true)" != "connected" ]]; then
+            if [[ -r "$status_file" ]] && [[ "$(cat "$status_file")" != "connected" ]]; then
                 continue
             fi
-            mode="$(head -n 1 "$modes_file" 2>/dev/null | grep -oE '^[0-9]{3,5}x[0-9]{3,5}' || true)"
-            [[ -n "$mode" ]] && modes+=("$mode")
+            if mode="$(read_first_mode "$modes_file")"; then
+                modes+=("$mode")
+            fi
         done
     fi
 
@@ -174,8 +204,9 @@ detect_ultrawide() {
         local modes_file
         for modes_file in /sys/class/drm/*/modes; do
             [[ -r "$modes_file" ]] || continue
-            mode="$(head -n 1 "$modes_file" 2>/dev/null | grep -oE '^[0-9]{3,5}x[0-9]{3,5}' || true)"
-            [[ -n "$mode" ]] && modes+=("$mode")
+            if mode="$(read_first_mode "$modes_file")"; then
+                modes+=("$mode")
+            fi
         done
     fi
 
@@ -208,7 +239,7 @@ apply_auto_wallpaper() {
     mkdir -p "$BG_DIR_1" "$BG_DIR_2"
     local bg_dir cur_src
     for bg_dir in "$BG_DIR_1" "$BG_DIR_2"; do
-        cur_src="$(grep -oE 'Path\("[^"]+"\)' "${bg_dir}/all" 2>/dev/null | sed -E 's/^Path\("(.*)"\)$/\1/' || true)"
+        cur_src="$(read_bg_path "${bg_dir}/all")"
         if [[ "$cur_src" != "$target_wp" ]] || [[ ! -f "${bg_dir}/same-on-all" ]]; then
             cat << RON > "${bg_dir}/all"
 (
@@ -235,7 +266,9 @@ if [[ "$WATCH_MODE" == "true" ]]; then
         udevadm monitor --udev --subsystem-match=drm 2>/dev/null | while read -r line; do
             if [[ "$line" == *"change"* || "$line" == *"add"* ]]; then
                 sleep 1
-                apply_auto_wallpaper || true
+                if ! apply_auto_wallpaper; then
+                    echo "[novos-wallpaper-auto] wallpaper refresh after DRM event failed; still watching" >&2
+                fi
             fi
         done
     fi
@@ -255,7 +288,9 @@ export COSMIC_DISABLE_DIRECT_SCANOUT=1
 export WLR_NO_HARDWARE_CURSORS=1
 export COSMIC_DATA_CONTROL_ENABLED=1
 
-udevadm settle --timeout=5 2>/dev/null || true
+if ! udevadm settle --timeout=5; then
+    echo "[cosmic-session-launch] udevadm settle timed out; waiting for /dev/dri below" >&2
+fi
 for _ in 1 2 3 4 5; do
     ls /dev/dri/card* >/dev/null 2>&1 && break
     sleep 1
@@ -266,13 +301,17 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 fi
 if [ ! -d "${XDG_RUNTIME_DIR}" ]; then
-    mkdir -p -m 0700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
-else
-    chmod 0700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+    if ! mkdir -p -m 0700 "${XDG_RUNTIME_DIR}"; then
+        echo "[cosmic-session-launch] cannot create XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >&2
+    fi
+elif ! chmod 0700 "${XDG_RUNTIME_DIR}"; then
+    echo "[cosmic-session-launch] cannot chmod 0700 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >&2
 fi
 
 if [ -x /usr/local/bin/novos-wallpaper-auto ]; then
-    /usr/local/bin/novos-wallpaper-auto >/dev/null 2>&1 || true
+    if ! /usr/local/bin/novos-wallpaper-auto >/dev/null 2>&1; then
+        echo "[cosmic-session-launch] novos-wallpaper-auto failed; keeping the current wallpaper" >&2
+    fi
     /usr/local/bin/novos-wallpaper-auto --watch >/dev/null 2>&1 &
 fi
 
@@ -325,15 +364,19 @@ groupadd -f cosmic-greeter
 if ! id -u cosmic-greeter >/dev/null 2>&1; then
     useradd -r -g cosmic-greeter -G video,render,input,audio -d /var/lib/cosmic-greeter -s /usr/sbin/nologin cosmic-greeter
 fi
-usermod -d /var/lib/cosmic-greeter cosmic-greeter 2>/dev/null || true
+usermod -d /var/lib/cosmic-greeter cosmic-greeter
 for grp in video render input audio _greetd; do
     if getent group "$grp" >/dev/null 2>&1; then
-        usermod -aG "$grp" cosmic-greeter 2>/dev/null || true
+        usermod -aG "$grp" cosmic-greeter
     fi
 done
 mkdir -p /var/lib/cosmic-greeter /var/lib/greetd /var/cache/tuigreet
 if id -u _greetd >/dev/null 2>&1; then
-    usermod -aG video,render,input,audio,cosmic-greeter _greetd 2>/dev/null || true
+    for grp in video render input audio cosmic-greeter; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -aG "$grp" _greetd
+        fi
+    done
     chown -R _greetd:_greetd /var/lib/greetd
 fi
 chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet
@@ -423,7 +466,10 @@ fi
 cat << 'EOF' > /usr/local/bin/cosmic-greeter-app
 #!/usr/bin/env bash
 export COSMIC_DATA_CONTROL_ENABLED=1
-rm -rf "/run/user/$(id -u)/cosmic/com.system76.CosmicSettingsDaemon/v1/"* 2>/dev/null || true
+settings_cache="/run/user/$(id -u)/cosmic/com.system76.CosmicSettingsDaemon/v1"
+if [ -d "$settings_cache" ] && ! rm -rf "${settings_cache:?}/"*; then
+    echo "[cosmic-greeter-app] cannot clear ${settings_cache}; starting with the stale settings cache" >&2
+fi
 exec /usr/bin/cosmic-greeter "$@"
 EOF
 chmod 0755 /usr/local/bin/cosmic-greeter-app
@@ -439,7 +485,9 @@ export COSMIC_DISABLE_DIRECT_SCANOUT=1
 export WLR_NO_HARDWARE_CURSORS=1
 export COSMIC_DATA_CONTROL_ENABLED=1
 
-udevadm settle --timeout=5 2>/dev/null || true
+if ! udevadm settle --timeout=5; then
+    echo "[cosmic-greeter-launch] udevadm settle timed out; waiting for /dev/dri below" >&2
+fi
 for _ in 1 2 3 4 5; do
     ls /dev/dri/card* >/dev/null 2>&1 && break
     sleep 1
@@ -449,13 +497,17 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 fi
 if [ ! -d "${XDG_RUNTIME_DIR}" ]; then
-    mkdir -p -m 0700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
-else
-    chmod 0700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+    if ! mkdir -p -m 0700 "${XDG_RUNTIME_DIR}"; then
+        echo "[cosmic-greeter-launch] cannot create XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >&2
+    fi
+elif ! chmod 0700 "${XDG_RUNTIME_DIR}"; then
+    echo "[cosmic-greeter-launch] cannot chmod 0700 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >&2
 fi
 
 if [ -x /usr/local/bin/novos-wallpaper-auto ]; then
-    /usr/local/bin/novos-wallpaper-auto "/var/lib/cosmic-greeter/.config/cosmic" >/dev/null 2>&1 || true
+    if ! /usr/local/bin/novos-wallpaper-auto "/var/lib/cosmic-greeter/.config/cosmic" >/dev/null 2>&1; then
+        echo "[cosmic-greeter-launch] novos-wallpaper-auto failed; keeping the current greeter wallpaper" >&2
+    fi
 fi
 
 if ls /dev/dri/card* >/dev/null 2>&1 && [ -x /usr/bin/cosmic-comp ] && [ -x /usr/local/bin/cosmic-greeter-app ]; then
@@ -513,7 +565,10 @@ StandardError=journal
 EOF
 
 echo "==> [Stage 4.4] Registering Flathub & Enabling Graphical Target Services..."
-flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+if ! flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo; then
+    echo "[FATAL] flatpak remote-add flathub failed (fetching https://dl.flathub.org/repo/flathub.flatpakrepo)." >&2
+    exit 1
+fi
 
 systemctl enable greetd.service NetworkManager.service
 systemctl set-default graphical.target
@@ -563,14 +618,16 @@ provision_cosmic_theme() {
         "${cfg_base}/com.system76.CosmicTheme.Light/v2"
 
     if [[ "$cfg_base" != "/usr/share/cosmic" ]]; then
-        if [[ -d /usr/share/cosmic/com.system76.CosmicTheme.Dark ]]; then
-            cp -a /usr/share/cosmic/com.system76.CosmicTheme.Dark/v1/* "${cfg_base}/com.system76.CosmicTheme.Dark/v1/" 2>/dev/null || true
-            cp -a /usr/share/cosmic/com.system76.CosmicTheme.Dark/v2/* "${cfg_base}/com.system76.CosmicTheme.Dark/v2/" 2>/dev/null || true
-        fi
-        if [[ -d /usr/share/cosmic/com.system76.CosmicTheme.Light ]]; then
-            cp -a /usr/share/cosmic/com.system76.CosmicTheme.Light/v1/* "${cfg_base}/com.system76.CosmicTheme.Light/v1/" 2>/dev/null || true
-            cp -a /usr/share/cosmic/com.system76.CosmicTheme.Light/v2/* "${cfg_base}/com.system76.CosmicTheme.Light/v2/" 2>/dev/null || true
-        fi
+        local theme_mode theme_ver theme_src
+        for theme_mode in Dark Light; do
+            for theme_ver in v1 v2; do
+                theme_src="/usr/share/cosmic/com.system76.CosmicTheme.${theme_mode}/${theme_ver}"
+                # Copy only when the system theme dir has entries; an empty or absent dir is not an error.
+                if compgen -G "${theme_src}/*" >/dev/null; then
+                    cp -a "${theme_src}/"* "${cfg_base}/com.system76.CosmicTheme.${theme_mode}/${theme_ver}/"
+                fi
+            done
+        done
     fi
 
     printf 'true\n' > "${cfg_base}/com.system76.CosmicTheme.Mode/v1/is_dark"
