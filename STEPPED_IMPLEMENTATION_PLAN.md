@@ -105,7 +105,7 @@
 * **Decided 2026-11-07 (test overlay):** install-e2e cannot reach the live guest by SSH (no `openssh-server` in the ISO). The user rejected sshd and a serial getty on the production image. Tests boot a derived ISO, the production ISO plus a `live/zz-novos-test.squashfs` layer carrying `qemu-guest-agent` (15F); the harness talks over the agent's virtio-serial channel (15G). The production ISO, its `filesystem.squashfs` and the golden snapshot never contain test hooks. Prefetching the agent is approved: the install-time-package rule covers only packages removed from the build because they broke.
 * **Verify in the first 15G VM run:** live-boot stacks every `/live/*.squashfs` in name order when there is no `filesystem.module` (the ISO has none). If the agent never answers, this assumption is the first suspect. **Verified 2026-11-07** (user boot of `NovOS-sid-amd64-test.iso`): both layers mounted, overlay lowerdir `zz-novos-test.squashfs:filesystem.squashfs`, `qemu-guest-agent` active, `guest-ping` answered.
 * **Found 2026-11-07 (Limine auto-boot):** the same boot sat at the Limine menu until Down+Enter was sent. Both generated configs use `default_entry: 1`, which selects the `/+…` directory line, so the timeout never boots anything; this also stalls every unattended harness run (likely the install-e2e M2 timeout) and real installed systems. Fixed by STEP 15H, ordered before 15G.
-* **Found 2026-11-08 (install-e2e netinstall DNS):** the first install-e2e run over the guest agent (15G) passed M1–M5_INSTALL_ROOTFS, then failed M5_INSTALL_NETINSTALL with "Unable to locate package" for every package. One-off diagnostics over the agent showed the live guest's network is fine (DHCP, NetworkManager `nameserver 10.0.2.3`, strict `apt-get update` rc 0), but in the target chroot every fetch fails with "Temporary failure resolving". Cause: `filesystem.squashfs` ships the build host's systemd-resolved stub as a regular file `/etc/resolv.conf` (`nameserver 127.0.0.53`), because `mount_chroot_pseudo_fs` (`scripts/lib/verify-deps.sh:413-415`) does `cp -L /etc/resolv.conf` into the build chroot and nothing removes it before mksquashfs. The real Calamares `networkcfg` module (ISO copy, `networkcfg/main.py:170-185`) always replaces the target's resolv.conf with the live one, so real installs resolve; the harness's networkcfg reproduction (`[ ! -s ]`) keeps the stale stub, so the harness is unfaithful (STEP 15I). The masking (`apt-get update` exits 0 on fetch warnings; `novos-setup --pre-packages` runs `apt-get update -q || true`, `05-profiles-installer.sh:625`) is already covered by STEP 10E. Shipping the host stub in the image is fixed separately (STEP 15J). Order: 15I → 15C; 15J is independent and changes the production squashfs (fresh build + re-bless).
+* **Found 2026-11-08 (install-e2e netinstall DNS):** the first install-e2e run over the guest agent (15G) passed M1–M5_INSTALL_ROOTFS, then failed M5_INSTALL_NETINSTALL with "Unable to locate package" for every package. One-off diagnostics over the agent showed the live guest's network is fine (DHCP, NetworkManager `nameserver 10.0.2.3`, strict `apt-get update` rc 0), but in the target chroot every fetch fails with "Temporary failure resolving". Cause: `filesystem.squashfs` ships the build host's systemd-resolved stub as a regular file `/etc/resolv.conf` (`nameserver 127.0.0.53`), because `mount_chroot_pseudo_fs` (`scripts/lib/verify-deps.sh:413-415`) does `cp -L /etc/resolv.conf` into the build chroot and nothing removes it before mksquashfs. The real Calamares `networkcfg` module (ISO copy, `networkcfg/main.py:170-185`) always replaces the target's resolv.conf with the live one, so real installs resolve; the harness's networkcfg reproduction (`[ ! -s ]`) keeps the stale stub, so the harness is unfaithful (STEP 15I). The masking (`apt-get update` exits 0 on fetch warnings; `novos-setup --pre-packages` runs `apt-get update -q || true`, `05-profiles-installer.sh:625`) is already covered by STEP 10E. Shipping the host stub in the image is fixed separately (STEP 15J). 15J changes the production squashfs (fresh build + re-bless); its position is in **Up Next**.
 * **Before 15J:** the shipped `/etc/resolv.conf` form. Recommended: absent from `filesystem.squashfs` (NetworkManager creates it at boot; Calamares `networkcfg` copies the live one into the target). Alternative: a symlink to `/run/NetworkManager/resolv.conf` (NM `rc-manager=symlink` then leaves `/etc` untouched, but `networkcfg` copies the symlink itself, `follow_symlinks=False`, so the target chroot would get a dangling link until boot and the `--pre-packages` 1.1.1.1 fallback would run). 15J is written for "absent"; change MUTATION_SPEC 1 if you choose otherwise.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
@@ -114,6 +114,39 @@
 ---
 
 ## Step Execution Roadmap
+
+**How to read this:** work goes strictly top to bottom through **Up Next**, one step at a time. The **#** column is the only order; step IDs are kept because commits and notes cite them. A step whose "Waits on" names an open question stops the queue until you answer it (see Open Questions). When a step lands, its row moves to **Completed**. New steps discovered mid-work are inserted into Up Next at the position they must run, never appended elsewhere.
+
+### Up Next
+
+| # | Step | Command | Scope | Target Files | Waits on |
+| :---: | :--- | :---: | :--- | :--- | :--- |
+| 1 | **STEP 15J** | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh` | Your answer: "Before 15J" (shipped `/etc/resolv.conf` form). Fresh build after. |
+| 2 | **STEP 15C** | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` | — |
+| 3 | **STEP 15E** | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` | — |
+| 4 | **STEP 10A** | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` | — |
+| 5 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
+| 6 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
+| 7 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
+| 8 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
+| 9 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
+| 10 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 11 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 12 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 13 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 14 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 15 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 16 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 17 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 18 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 19 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 20 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 21 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 22 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+
+Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
+
+### Completed
 
 | Step ID | Status | Command | Scope | Target Files |
 | :--- | :---: | :---: | :--- | :--- |
@@ -143,34 +176,12 @@
 | **STEP 9K** | **COMPLETED** | `/goal` | Post-Calamares installs dev `custom-tool` entries (zig) online | `scripts/stages/05-profiles-installer.sh` |
 | **STEP 9L** | **COMPLETED** | `/goal` | Atomic binary install (temp + rename) so self-install never hits ETXTBSY | `crates/novos-custom-tools/src/main.rs` |
 | **STEP 9M** | **COMPLETED** | `/goal` | Tarball installs owned by root (`tar --no-same-owner`) | `crates/novos-custom-tools/src/main.rs` |
-| **STEP 10A** | PLANNED | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` |
-| **STEP 10B** | PLANNED | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` |
-| **STEP 10C** | PLANNED | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` |
-| **STEP 10D** | PLANNED | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` |
-| **STEP 10E** | PLANNED | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` |
-| **STEP 10F** | PLANNED | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) |
-| **STEP 11A** | PLANNED | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` |
-| **STEP 11B** | PLANNED | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` |
-| **STEP 11C** | PLANNED | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` |
-| **STEP 11D** | PLANNED | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` |
-| **STEP 12A** | PLANNED | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` |
-| **STEP 12B** | PLANNED (blocked on 13B, 15A) | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` |
-| **STEP 12C** | PLANNED | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` |
-| **STEP 13A** | PLANNED | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` |
-| **STEP 13B** | EXTERNAL | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo |
-| **STEP 13C** | PLANNED (blocked on 13B) | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` |
-| **STEP 13D** | PLANNED (user-approved delete) | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) |
-| **STEP 14A** | PLANNED | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` |
 | **STEP 15A** | **COMPLETED** | `/boost` | Export third-party .debs to a host artifact cache each build | `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` |
 | **STEP 15B** | **COMPLETED** | `/boost` | install-e2e follows the real Calamares path (10 subvolumes, netinstall groups, post-calamares) | `scripts/test-docker-qemu.py` |
 | **STEP 15F** | COMPLETED (user run 2026-11-07: filesystem.squashfs sha256 21a59a99… identical; VM boot verified: both layers mounted, agent answered) | `/boost` | Test-only overlay ISO: production ISO + `live/zz-novos-test.squashfs` (qemu-guest-agent), production squashfs byte-identical | `scripts/make-test-overlay-iso.py` |
 | **STEP 15H** | COMPLETED (user build 2026-11-08: test ISO auto-booted with no keypress, agent answered in <60 s; installed-system auto-boot verified 2026-11-08 by install-e2e M6, which booted /dev/vda unattended) | `/goal` | Limine `default_entry` boots the first kernel entry, not the menu directory (live ISO + installed system) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh`, `scripts/stages/03-core-system.sh` |
 | **STEP 15G** | COMPLETED (user runs 2026-11-08 on the test ISO: live-boot pass; install-e2e pass after 15I, 11/11 milestones incl. M5_INSTALL_TEST_AGENT and M6 over the agent; overlay `matches_manifest: true`) | `/boost` | Harness talks to the guest over the QEMU guest agent instead of SSH; agent added to the installed target after the bootloader | `scripts/test-docker-qemu.py` |
 | **STEP 15I** | COMPLETED (user run 2026-11-08: target resolv.conf `nameserver 10.0.2.3`; netinstall dev,network passed; install-e2e pass, `--skip-variance-check` pending the kernel ABI bless) | `/goal` | install-e2e networkcfg copies the live resolv.conf like Calamares; netinstall fails fast with the apt fetch errors | `scripts/test-docker-qemu.py` |
-| **STEP 15J** | PLANNED | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub) **[USER BUILD]** | `scripts/stages/06-snapshot-finalize.sh` |
-| **STEP 15C** | PLANNED (blocked on 15I) | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` |
-| **STEP 15E** | PLANNED (blocked on 15C) | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` |
-| **STEP 15D** | PLANNED (blocked on 13B, 12B, 15E) | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` |
 
 ---
 
@@ -1686,9 +1697,7 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 
 ## Phase G8: Candidate Promotion (Decided 2026-11-07)
 
-Order: 15B → 15C → 15E (same file) and 15A can run now; 12B needs 13B + 15A; 15D needs 13B, 12B, 15C and 15E.
-Amended 2026-11-07: the first install-e2e run after 15B timed out at M2 because the live ISO has no `openssh-server` (install-time `network` group only) and the harness logs in by SSH. Decided: the production ISO gets no test hook; tests boot a derived overlay ISO (15F) and reach the guest through the QEMU guest agent (15G). New order: 15F → 15G → 15C → 15E.
-Amended 2026-11-07: the first boot of the 15F test ISO stalled at the Limine menu (`default_entry: 1` selects the `/+` directory). New order: 15F → 15H → 15G → 15C → 15E. 15H changes the production build, so its fresh build + test-ISO boot is user-run before 15G starts.
+Order: see **Up Next** in the Step Execution Roadmap (the single source of execution order). History: 15F, 15H, 15G and 15I were inserted on 2026-11-07/08 after the first install-e2e runs exposed missing SSH, the Limine menu stall and target DNS.
 
 ### STEP 15A: Third-Party Artifact Cache
 
