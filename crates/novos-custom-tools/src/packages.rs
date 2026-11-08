@@ -1388,8 +1388,8 @@ groups:
         let s = m.summary();
         assert_eq!(s.groups, 17);
         assert_eq!(s.subgroups, 38);
-        assert_eq!(s.entries, 286);
-        assert_eq!(s.unique_packages, 256);
+        assert_eq!(s.entries, 287);
+        assert_eq!(s.unique_packages, 257);
         let base = m
             .list(
                 &ListFilter {
