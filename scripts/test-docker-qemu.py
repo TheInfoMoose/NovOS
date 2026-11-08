@@ -23,6 +23,9 @@ across two tiers:
          sub-step (qemu-guest-agent .debs from the test overlay into the target), then umount.
       3. Reboot VM from `/dev/vda` (without CD-ROM boot override) and verify
          installed system boots cleanly.
+      4. M6_INSTALLED_CHECKS on the installed disk: the `--groups` profiles' apt packages
+         are installed, custom tools run at their manifest version (`zig version`) with
+         install_dir owned 0:0, and `tailscale version` succeeds when network is selected.
 
 The guest is reached only through the QEMU guest agent (STEP 15G): `--iso` must be the
 derived test ISO from `scripts/make-test-overlay-iso.py` (it carries
@@ -80,6 +83,15 @@ DEFAULT_TIMEOUT_BY_TIER = {
 # install-e2e reproduces the Calamares exec sequence from these configs (STEP 15B).
 CALAMARES_DIR = REPO_ROOT / "calamares"
 PACKAGES_MANIFEST_PATH = REPO_ROOT / "config" / "packages.yaml"
+CUSTOM_TOOLS_MANIFEST_PATH = REPO_ROOT / "custom-tools" / "manifest.yaml"
+# M6_INSTALLED_CHECKS (STEP 15C): the installed image's copies of the manifests (Stage 5.1b).
+INSTALLED_PACKAGES_MANIFEST = "/etc/novos/packages.yaml"
+INSTALLED_CUSTOM_TOOLS_CLI = "/usr/local/bin/novos-custom-tools"
+INSTALLED_CHECKS_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+INSTALLED_CHECKS_TIMEOUT_SEC = 120
+# Version command per `source: custom-tool` entry; its first stdout line must equal the
+# custom-tools/manifest.yaml `version`. A custom tool without an entry here fails the check.
+CUSTOM_TOOL_VERSION_ARGS: dict[str, tuple[str, ...]] = {"zig": ("version",)}
 DEFAULT_INSTALL_GROUPS = "dev,network"
 INSTALL_E2E_DISK = "/dev/vda"
 INSTALL_E2E_TARGET = "/mnt/novos-install"
@@ -650,6 +662,17 @@ def build_milestone_plan(tier: str) -> list[dict[str, Any]]:
                 "id": "M6_REBOOT_INSTALLED_VDA",
                 "tier": "install-e2e",
                 "description": "Reboot VM from /dev/vda (without CD-ROM boot override) and verify installed system boots cleanly",
+            },
+            {
+                "id": "M6_INSTALLED_CHECKS",
+                "tier": "install-e2e",
+                "description": (
+                    "On the booted installed disk (guest agent): every apt package of the --groups profiles "
+                    "(`novos-custom-tools packages list --profile <p> --source apt --with-arch`) is installed "
+                    "(`dpkg-query -W`); every custom-tool entry runs (`zig version` equals the manifest version), "
+                    "its install_dir is owned 0:0 throughout and its install_target resolves into it; "
+                    "`tailscale version` succeeds when network is selected"
+                ),
             },
         ]
 
@@ -1763,6 +1786,238 @@ def run_install_e2e_on_guest(
     return ok, milestones
 
 
+def install_group_profiles(
+    groups: list[dict[str, Any]], manifest_path: pathlib.Path = PACKAGES_MANIFEST_PATH
+) -> list[str]:
+    """Profile ids (config/packages.yaml `profile`) of the resolved `--groups` netinstall groups."""
+    manifest = _load_yaml_file(manifest_path) or {}
+    by_name: dict[str, str] = {}
+    for g in manifest.get("groups") or []:
+        if isinstance(g, dict) and g.get("layer") == "profile" and g.get("profile"):
+            by_name[str(g["name"])] = str(g["profile"])
+    profiles: list[str] = []
+    for group in groups:
+        profile = by_name.get(str(group["name"]))
+        if profile is None:
+            raise ValueError(
+                f"{manifest_path}: no profile-layer group named {group['name']!r} (--groups token {group['token']!r})"
+            )
+        if profile not in profiles:
+            profiles.append(profile)
+    return profiles
+
+
+def load_custom_tools_manifest(path: pathlib.Path = CUSTOM_TOOLS_MANIFEST_PATH) -> dict[str, dict[str, Any]]:
+    """custom-tools/manifest.yaml `tools` entries by name."""
+    data = _load_yaml_file(path) or {}
+    return {
+        str(t["name"]): t for t in data.get("tools") or [] if isinstance(t, dict) and "name" in t
+    }
+
+
+def build_dpkg_query_script(packages: list[str]) -> str:
+    """
+    One guest script querying every package spec (`name` or `name:arch`): per spec a
+    `Q<TAB>spec` line, then `R<TAB>Package<TAB>Architecture<TAB>Status<TAB>Version` rows from
+    `dpkg-query -W`, or `E<TAB>rc<TAB>message` when dpkg-query fails.
+    """
+    fmt = "R\\t${Package}\\t${Architecture}\\t${Status}\\t${Version}\\n"
+    specs = " ".join(shlex.quote(p) for p in packages)
+    return (
+        f"export PATH={shlex.quote(INSTALLED_CHECKS_PATH)}\n"
+        f"for p in {specs}; do\n"
+        "  printf 'Q\\t%s\\n' \"$p\"\n"
+        f"  if out=$(dpkg-query -W -f='{fmt}' \"$p\" 2>&1); then\n"
+        "    printf '%s\\n' \"$out\"\n"
+        "  else\n"
+        "    rc=$?\n"
+        "    printf 'E\\t%s\\t%s\\n' \"$rc\" \"$(printf '%s' \"$out\" | tr '\\t\\n' '  ')\"\n"
+        "  fi\n"
+        "done\n"
+    )
+
+
+def evaluate_dpkg_query_report(packages: list[str], report: str, native_arch: str = "amd64") -> dict[str, str | None]:
+    """
+    Map each queried spec to None (installed: a row with Status `install ok installed` whose
+    architecture is the qualifier, or native/all when unqualified) or to the observed value.
+    """
+    rows: dict[str, list[list[str]]] = {p: [] for p in packages}
+    errors: dict[str, str] = {}
+    current: str | None = None
+    for line in report.splitlines():
+        fields = line.split("\t")
+        if fields[0] == "Q" and len(fields) >= 2:
+            current = fields[1]
+            rows.setdefault(current, [])
+        elif current is not None and fields[0] == "R" and len(fields) >= 5:
+            rows[current].append(fields[1:5])
+        elif current is not None and fields[0] == "E":
+            errors[current] = " ".join(fields[1:]).strip()
+
+    result: dict[str, str | None] = {}
+    for spec in packages:
+        name, _, arch = spec.partition(":")
+        wanted_arches = {arch} if arch else {native_arch, "all"}
+        matching = [r for r in rows.get(spec, []) if r[0] == name and r[1] in wanted_arches]
+        if any(r[2] == "install ok installed" for r in matching):
+            result[spec] = None
+        elif spec in errors:
+            result[spec] = f"dpkg-query exit {errors[spec]}"
+        elif matching:
+            result[spec] = "; ".join(f"{r[0]}:{r[1]} status={r[2]!r} version={r[3]!r}" for r in matching)
+        elif rows.get(spec):
+            result[spec] = "only other architectures: " + ", ".join(f"{r[0]}:{r[1]}" for r in rows[spec])
+        else:
+            result[spec] = "no dpkg-query output"
+    return result
+
+
+def verify_installed_system(
+    profiles: list[str],
+    custom_tools: dict[str, dict[str, Any]],
+    *,
+    qga_socket: pathlib.Path,
+) -> dict[str, Any]:
+    """
+    M6_INSTALLED_CHECKS on the booted installed disk, over the guest agent. Every check is
+    recorded as {profile, item, passed, observed}; each failure is the string
+    `profile=<p> item=<i> observed=<v>`. Any failure fails the milestone.
+    """
+    checks: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    def record(profile: str, item: str, passed: bool, observed: str) -> None:
+        checks.append({"profile": profile, "item": item, "passed": passed, "observed": observed})
+        if not passed:
+            failures.append(f"profile={profile} item={item} observed={observed}")
+
+    def guest(cmd: str) -> tuple[int | None, str, str]:
+        script = f"export PATH={shlex.quote(INSTALLED_CHECKS_PATH)}\n{cmd}"
+        try:
+            res = run_guest_exec(script, timeout=INSTALLED_CHECKS_TIMEOUT_SEC, qga_socket=qga_socket)
+        except subprocess.TimeoutExpired:
+            return None, "", f"guest-agent exec timed out after {INSTALLED_CHECKS_TIMEOUT_SEC}s"
+        except OSError as exc:
+            return None, "", f"guest-agent exec failed: {exc}"
+        return res.returncode, res.stdout, res.stderr
+
+    def one_line(text: str) -> str:
+        return " | ".join(ln.strip() for ln in text.strip().splitlines()[:5]) or "(empty)"
+
+    def manifest_list(profile: str, source: str) -> list[str] | None:
+        item = f"packages list --source {source}"
+        cmd = shlex.join(
+            [INSTALLED_CUSTOM_TOOLS_CLI, "packages", "list", INSTALLED_PACKAGES_MANIFEST,
+             "--profile", profile, "--source", source, "--with-arch"]
+        )
+        rc, out, err = guest(cmd)
+        if rc != 0:
+            record(profile, item, False, f"exit {rc}: {one_line(err or out)}")
+            return None
+        names = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        record(profile, item, True, f"{len(names)} entries")
+        return names
+
+    for profile in profiles:
+        # 1. apt packages of the profile are installed.
+        apt_pkgs = manifest_list(profile, "apt")
+        if apt_pkgs is not None:
+            if not apt_pkgs:
+                record(profile, "apt packages", False, f"{INSTALLED_PACKAGES_MANIFEST} lists no apt packages")
+            else:
+                rc, out, err = guest(build_dpkg_query_script(apt_pkgs))
+                if rc != 0:
+                    record(profile, "dpkg-query -W", False, f"exit {rc}: {one_line(err or out)}")
+                else:
+                    for spec, observed in evaluate_dpkg_query_report(apt_pkgs, out).items():
+                        record(profile, f"apt:{spec}", observed is None, observed or "install ok installed")
+
+        # 2. custom-tool entries run, are owned 0:0 and are linked into their install_dir.
+        tool_names = manifest_list(profile, "custom-tool")
+        for name in tool_names or []:
+            tool = custom_tools.get(name)
+            if tool is None:
+                record(profile, f"custom-tool:{name}", False, "no entry in custom-tools/manifest.yaml")
+                continue
+            version_args = CUSTOM_TOOL_VERSION_ARGS.get(name)
+            binary = str(tool.get("binary") or name)
+            if version_args is None:
+                record(profile, f"custom-tool:{name}", False, "no version command in CUSTOM_TOOL_VERSION_ARGS")
+            else:
+                version_cmd = shlex.join([binary, *version_args])  # e.g. `zig version`
+                expected = str(tool.get("version", ""))
+                rc, out, err = guest(version_cmd)
+                observed = out.strip().splitlines()[0].strip() if out.strip() else ""
+                if rc != 0:
+                    record(profile, f"`{version_cmd}`", False, f"exit {rc}: {one_line(err or out)}")
+                else:
+                    record(
+                        profile,
+                        f"`{version_cmd}` == {expected}",
+                        bool(expected) and observed == expected,
+                        observed or "(empty)",
+                    )
+
+            install_dir = str(tool.get("install_dir") or "").rstrip("/")
+            if install_dir:
+                qdir = shlex.quote(install_dir)
+                rc, out, err = guest(
+                    f"if [ ! -d {qdir} ]; then echo 'not a directory'; exit 3; fi\n"
+                    f"find {qdir} \\( ! -uid 0 -o ! -gid 0 \\) -printf '%U:%G %p\\n'"
+                )
+                not_root = [ln for ln in out.splitlines() if ln.strip()]
+                if rc != 0:
+                    record(profile, f"{install_dir} owner 0:0", False, f"exit {rc}: {one_line(err or out)}")
+                else:
+                    record(
+                        profile,
+                        f"{install_dir} owner 0:0",
+                        not not_root,
+                        f"{len(not_root)} paths not 0:0: {one_line(out)}" if not_root else "all 0:0",
+                    )
+
+            install_target = str(tool.get("install_target") or "")
+            if install_target and install_dir:
+                rc, out, err = guest(f"readlink -f {shlex.quote(install_target)}")
+                resolved = out.strip()
+                if rc != 0:
+                    record(profile, f"{install_target} -> {install_dir}", False, f"exit {rc}: {one_line(err or out)}")
+                else:
+                    record(
+                        profile,
+                        f"{install_target} -> {install_dir}",
+                        resolved.startswith(install_dir + "/"),
+                        resolved or "(empty)",
+                    )
+
+    # 3. tailscale runs when the network profile is selected.
+    if "network" in profiles:
+        rc, out, err = guest("tailscale version")
+        record(
+            "network",
+            "`tailscale version`",
+            rc == 0 and bool(out.strip()),
+            out.strip().splitlines()[0].strip() if rc == 0 and out.strip() else f"exit {rc}: {one_line(err or out)}",
+        )
+
+    passed = not failures
+    detail = (
+        f"{len(checks)} checks passed for profiles {', '.join(profiles)}"
+        if passed
+        else f"{len(failures)} of {len(checks)} checks failed: " + "; ".join(failures[:20])
+        + (f"; ... {len(failures) - 20} more" if len(failures) > 20 else "")
+    )
+    return {
+        "id": "M6_INSTALLED_CHECKS",
+        "passed": passed,
+        "profiles": profiles,
+        "detail": detail,
+        "failures": failures,
+        "checks": checks,
+    }
+
+
 # ==============================================================================
 # 6. Main Orchestration Loop (`run_harness`)
 # ==============================================================================
@@ -1879,10 +2134,14 @@ def run_harness(args: argparse.Namespace) -> int:
     # install-e2e: read the Calamares configuration and resolve --groups before booting anything.
     install_cfg: dict[str, Any] | None = None
     install_groups: list[dict[str, Any]] = []
+    install_profiles: list[str] = []
+    custom_tools: dict[str, dict[str, Any]] = {}
     if tier == "install-e2e":
         try:
             install_cfg = load_calamares_install_config()
             install_groups = resolve_install_groups(args.groups, install_cfg["netinstall"])
+            install_profiles = install_group_profiles(install_groups)
+            custom_tools = load_custom_tools_manifest()
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             print(f"[ERROR] install-e2e Calamares configuration: {exc}", file=sys.stderr)
             return EXIT_ERROR
@@ -1975,6 +2234,7 @@ def run_harness(args: argparse.Namespace) -> int:
                 "subvolumes": install_cfg["subvolumes"],
                 "esp": install_cfg["esp"],
                 "groups": [{"token": g["token"], "name": g["name"]} for g in install_groups],
+                "profiles": install_profiles,
                 "shellprocess_conf": install_cfg["shellprocess_conf"],
                 "test_user": INSTALL_E2E_TEST_USER,
             }
@@ -2131,6 +2391,12 @@ def run_harness(args: argparse.Namespace) -> int:
             )
             if not sd_inst.get("valid"):
                 raise RuntimeError(f"Installed system QMP screendump invalid: {sd_inst}")
+
+            # M6_INSTALLED_CHECKS (STEP 15C): packages, custom tools and ownership on the installed disk.
+            installed_checks = verify_installed_system(install_profiles, custom_tools, qga_socket=qga_socket)
+            completed_milestones.append(installed_checks)
+            if not installed_checks["passed"]:
+                raise RuntimeError(f"M6_INSTALLED_CHECKS failed: {installed_checks['detail']}")
 
         status = "pass"
     except Exception as exc:
@@ -2293,8 +2559,8 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         plan_live = build_milestone_plan("live-boot")
         plan_e2e = build_milestone_plan("install-e2e")
         self.assertEqual(len(plan_live), 4)
-        # 4 live-boot + 6 install sub-steps (5 Calamares + harness-only test agent) + reboot
-        self.assertEqual(len(plan_e2e), 11)
+        # 4 live-boot + 6 install sub-steps (5 Calamares + harness-only test agent) + reboot + checks
+        self.assertEqual(len(plan_e2e), 12)
         self.assertEqual(
             [m["id"] for m in plan_e2e[4:]],
             [
@@ -2305,6 +2571,7 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
                 "M5_INSTALL_BOOTLOADER",
                 "M5_INSTALL_TEST_AGENT",
                 "M6_REBOOT_INSTALLED_VDA",
+                "M6_INSTALLED_CHECKS",
             ],
         )
         self.assertTrue(plan_e2e[9]["harness_only"])
@@ -2332,6 +2599,23 @@ class TestDockerQemuHarnessSelfTests(unittest.TestCase):
         self.assertEqual(by_name[0]["name"], groups[0]["name"])
         with self.assertRaises(ValueError):
             resolve_install_groups("no-such-group", cfg["netinstall"])
+        self.assertEqual(install_group_profiles(groups), ["dev", "network"])
+        tools = load_custom_tools_manifest()
+        self.assertIn("zig", CUSTOM_TOOL_VERSION_ARGS)
+        self.assertEqual(tools["zig"]["install_dir"], "/opt/zig")
+        self.assertIn("zig version", shlex.join([tools["zig"]["binary"], *CUSTOM_TOOL_VERSION_ARGS["zig"]]))
+        report = (
+            "Q\tgit\nR\tgit\tamd64\tinstall ok installed\t1:2.47\n"
+            "Q\tlibc6:i386\nR\tlibc6\tamd64\tinstall ok installed\t2.41\n"
+            "Q\tnope\nE\t1\tdpkg-query: no packages found matching nope\n"
+            "Q\tvim\nR\tvim\tamd64\tdeinstall ok config-files\t2:9.1\n"
+        )
+        evaluated = evaluate_dpkg_query_report(["git", "libc6:i386", "nope", "vim"], report)
+        self.assertIsNone(evaluated["git"])
+        self.assertIn("only other architectures", evaluated["libc6:i386"] or "")
+        self.assertIn("dpkg-query exit 1", evaluated["nope"] or "")
+        self.assertIn("deinstall", evaluated["vim"] or "")
+        self.assertIn("dpkg-query -W", build_dpkg_query_script(["git", "libc6:i386"]))
 
         part = build_install_partition_script(cfg, {"ROOT_LABEL": "NOVOS_ROOT"})
         self.assertIn("btrfs subvolume create /mnt/novos-install/@devshare", part)

@@ -123,27 +123,26 @@
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 15C** | `/goal` | install-e2e checks the installed system (packages, zig, tailscale, ownership) | `scripts/test-docker-qemu.py` | — |
-| 2 | **STEP 15E** | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` | — |
-| 3 | **STEP 10A** | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` | — |
-| 4 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
-| 5 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
-| 6 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
-| 7 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
-| 8 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
-| 9 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
-| 10 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
-| 11 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
-| 12 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
-| 13 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
-| 14 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
-| 15 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
-| 16 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
-| 17 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
-| 18 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
-| 19 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
-| 20 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
-| 21 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+| 1 | **STEP 15E** | `/goal` | install-e2e verifies install-time third-party packages (version + origin per component) | `scripts/test-docker-qemu.py` | — |
+| 2 | **STEP 10A** | `/goal` | Wire ISO variance lock into build (fail on drop/downgrade) | `scripts/build-novos.sh` | — |
+| 3 | **STEP 10B** | `/goal` | Suppression ratchet + forbidden-pattern gate | `config/suppression-baseline.toml`, `scripts/lib/verify-deps.sh` | — |
+| 4 | **STEP 10C** | `/goal` | De-mask Stage 3 | `scripts/stages/03-core-system.sh`, `config/suppression-baseline.toml` | — |
+| 5 | **STEP 10D** | `/goal` | De-mask Stage 4 | `scripts/stages/04-cosmic-desktop.sh`, `config/suppression-baseline.toml` | — |
+| 6 | **STEP 10E** | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` | — |
+| 7 | **STEP 10F** | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh` (+ baseline) | Fresh build after (covers 10A–10F). |
+| 8 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 9 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 10 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 11 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 12 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 13 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 14 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 15 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 16 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 17 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 18 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 19 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 20 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
 
 Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
 
@@ -186,6 +185,7 @@ Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile
 | **STEP 15J** | COMPLETED (user build 2026-11-08: filesystem.squashfs has no `etc/resolv.conf`; install-e2e pass incl. M5_INSTALL_NETINSTALL) | `/goal` | Image no longer ships the build host's `/etc/resolv.conf` (systemd-resolved stub); Stage 6 removes it before mksquashfs and fails if any remains | `scripts/stages/06-snapshot-finalize.sh` |
 | **STEP 15K** | COMPLETED (first build failed Stage 3.2 loudly on network-manager Breaks ppp, as intended → 15L) | `/goal` | Declare `ppp` explicitly in the base set (no silent Recommends drop) | `scripts/stages/03-core-system.sh`, `config/packages.yaml` |
 | **STEP 15L** | COMPLETED (user build 2026-11-08: ppp 2.5.2-1+2, libpcap0.8t64 1.11.0-1 installed; no snapshot source shipped; variance PASS 0 violations; install-e2e pass) | `/goal` | Build-time snapshot pin: `ppp` held at golden 2.5.2-1+2 from snapshot.debian.org 20261107T205437Z; pin source removed after Stage 3.2 (not shipped) | `config/build.env`, `scripts/stages/03-core-system.sh` |
+| **STEP 15C** | COMPLETED (user run 2026-11-08: M6_INSTALLED_CHECKS 66/66 for dev,network: 58 apt packages installed, zig 0.17.1, /opt/zig 0:0, tailscale 1.104.5) | `/goal` | install-e2e M6_INSTALLED_CHECKS: --groups profiles' apt packages installed (dpkg-query), `zig version` == manifest, /opt/zig 0:0, /usr/local/bin/zig into /opt/zig, `tailscale version` | `scripts/test-docker-qemu.py` |
 
 ---
 
