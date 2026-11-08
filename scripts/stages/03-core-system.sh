@@ -158,8 +158,11 @@ rm -f /etc/apt/apt.conf.d/80snapper
 # Ensure system D-Bus daemon is running inside chroot for subsequent package maintainer scripts
 mkdir -p /run/dbus
 if [ -x /usr/bin/dbus-daemon ] && [ ! -e /run/dbus/system_bus_socket ]; then
-    rm -f /run/dbus/pid 2>/dev/null || true
-    /usr/bin/dbus-daemon --system --fork || true
+    rm -f /run/dbus/pid
+    if ! /usr/bin/dbus-daemon --system --fork; then
+        echo "[FATAL] system dbus-daemon failed to start in the chroot; package maintainer scripts need it." >&2
+        exit 1
+    fi
 fi
 
 # Pre-configure Third-Party Repositories (XanMod, Debian COSMIC, Docker, VS Code, Tailscale, Antigravity)
@@ -270,7 +273,8 @@ EOF
 
 echo "==> [Stage 3.6] Installing Dual Kernels (XanMod x64v3 Primary + Locked Debian Fallback)..."
 apt-get install -y --no-remove linux-image-amd64 linux-headers-amd64
-apt-mark manual linux-image-amd64 linux-headers-amd64 $(dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*-amd64' 'linux-headers-[0-9]*-amd64' 2>/dev/null || true)
+DEBIAN_KERNEL_PKGS="$(dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*-amd64' 'linux-headers-[0-9]*-amd64')"
+apt-mark manual linux-image-amd64 linux-headers-amd64 ${DEBIAN_KERNEL_PKGS}
 
 XANMOD_INSTALLED="false"
 for attempt in 1 2 3; do
@@ -281,16 +285,23 @@ for attempt in 1 2 3; do
     fi
     echo "[WARN] linux-xanmod-x64v3 install attempt ${attempt} failed; purging partial APT cache and refreshing lists..." >&2
     apt-get clean
-    rm -f /var/cache/apt/archives/partial/* /var/lib/apt/lists/*xanmod* 2>/dev/null || true
-    apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true update || true
+    rm -f /var/cache/apt/archives/partial/* /var/lib/apt/lists/*xanmod*
+    if ! apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true update; then
+        echo "[WARN] apt-get update failed after XanMod attempt ${attempt}; the next attempt or the concrete-package fallback retries." >&2
+    fi
 done
 
 if [[ "$XANMOD_INSTALLED" != "true" ]]; then
     echo "[WARN] linux-xanmod-x64v3 meta-package failed (e.g. Hash Sum mismatch); resolving concrete XanMod image & headers via apt-cache..." >&2
-    XANMOD_IMG="$(apt-cache search --names-only '^linux-image-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1 || true)"
-    XANMOD_HDR="$(apt-cache search --names-only '^linux-headers-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1 || true)"
-    if [[ -n "$XANMOD_IMG" && -n "$XANMOD_HDR" ]]; then
-        apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true install -y --no-remove "$XANMOD_IMG" "$XANMOD_HDR" || true
+    XANMOD_IMG="$(apt-cache search --names-only '^linux-image-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1)"
+    XANMOD_HDR="$(apt-cache search --names-only '^linux-headers-[0-9].*-x64v3-xanmod' | awk '{print $1}' | sort -V | tail -n1)"
+    if [[ -z "$XANMOD_IMG" || -z "$XANMOD_HDR" ]]; then
+        echo "[FATAL] XanMod x64v3 kernel image/headers not found in the XanMod repository (image='${XANMOD_IMG}', headers='${XANMOD_HDR}')." >&2
+        exit 1
+    fi
+    if ! apt-get -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true install -y --no-remove "$XANMOD_IMG" "$XANMOD_HDR"; then
+        echo "[FATAL] XanMod x64v3 kernel install failed (meta-package after 3 attempts, then ${XANMOD_IMG} ${XANMOD_HDR})." >&2
+        exit 1
     fi
 fi
 
@@ -305,7 +316,7 @@ apt-get -o APT::Get::AutomaticRemove=false -o APT::AutoRemove::SuggestsImportant
     libgbm1 libegl-mesa0 libglx-mesa0 libgl1-mesa-dri libglx0 libegl1 \
     mesa-vulkan-drivers mesa-vulkan-drivers:i386 libvulkan1 libvulkan1:i386 \
     mesa-va-drivers mesa-opencl-icd vulkan-tools radeontop gamemode
-systemctl enable bluetooth.service 2>/dev/null || true
+systemctl enable bluetooth.service
 
 echo "==> [Stage 3.8] Installing Limine Bootloader (UEFI + BIOS), Versioned Kernel Hook & Read-Write Snapshot Manager..."
 rm -rf /tmp/limine
@@ -393,8 +404,8 @@ fi
 rm -f /etc/apt/apt.conf.d/80snapper
 
 # Disable unsolicited boot/timeline snapper timers so they do not create unsynced RO snapshots or evict Golden Master
-systemctl disable snapper-boot.timer snapper-timeline.timer 2>/dev/null || true
-systemctl mask snapper-boot.timer snapper-timeline.timer 2>/dev/null || true
+systemctl disable snapper-boot.timer snapper-timeline.timer
+systemctl mask snapper-boot.timer snapper-timeline.timer
 
 systemd-machine-id-setup
 
@@ -421,12 +432,21 @@ else
     if [ -z "${ROOT_UUID:-}" ] && [ -f /etc/fstab ]; then
         FSTAB_ROOT_DEV="$(awk '!/^[[:space:]]*#/ && $2 == "/" && $1 ~ /^\/dev\// { print $1; exit }' /etc/fstab | tr -d '"\047[:space:]')"
         if [ -n "${FSTAB_ROOT_DEV:-}" ]; then
-            ROOT_UUID="$(blkid -s UUID -o value "$FSTAB_ROOT_DEV" 2>/dev/null | tr -d '"\047[:space:]' || true)"
+            if blkid -s UUID -o value "$FSTAB_ROOT_DEV" >/dev/null 2>&1; then
+                ROOT_UUID="$(blkid -s UUID -o value "$FSTAB_ROOT_DEV" | tr -d '"\047[:space:]')"
+            fi
         fi
     fi
     if [ -z "${ROOT_UUID:-}" ]; then
-        ROOT_SOURCE="$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//' || true)"
-        ROOT_UUID="$(blkid -s UUID -o value "$ROOT_SOURCE" 2>/dev/null || findmnt -n -o UUID / 2>/dev/null || true)"
+        ROOT_SOURCE=""
+        if findmnt -n -o SOURCE / >/dev/null 2>&1; then
+            ROOT_SOURCE="$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')"
+        fi
+        if [ -n "$ROOT_SOURCE" ] && blkid -s UUID -o value "$ROOT_SOURCE" >/dev/null 2>&1; then
+            ROOT_UUID="$(blkid -s UUID -o value "$ROOT_SOURCE")"
+        elif findmnt -n -o UUID / >/dev/null 2>&1; then
+            ROOT_UUID="$(findmnt -n -o UUID /)"
+        fi
         ROOT_UUID="$(printf '%s' "${ROOT_UUID:-}" | tr -d '"\047[:space:]')"
     fi
     if [ -z "${ROOT_UUID:-}" ]; then
@@ -456,7 +476,10 @@ fi
 
 # 1. Prune excess Snapper snapshots beyond MAX_SNAPSHOTS
 if [ -d "/.snapshots" ]; then
-    ALL_SNAPS=($(ls -1d /.snapshots/[0-9]* 2>/dev/null | sort -t/ -k3 -n || true))
+    ALL_SNAPS=()
+    if compgen -G '/.snapshots/[0-9]*' >/dev/null; then
+        mapfile -t ALL_SNAPS < <(ls -1d /.snapshots/[0-9]* | sort -t/ -k3 -n)
+    fi
     SNAP_COUNT="${#ALL_SNAPS[@]}"
     if [ "$SNAP_COUNT" -gt "$MAX_SNAPSHOTS" ]; then
         DEL_COUNT=$((SNAP_COUNT - MAX_SNAPSHOTS))
@@ -464,7 +487,10 @@ if [ -d "/.snapshots" ]; then
             old_snap="${ALL_SNAPS[$i]}"
             old_num="$(basename "$old_snap")"
             echo "[Limine-Sync] Pruning old snapshot #${old_num} (limit: ${MAX_SNAPSHOTS})..."
-            btrfs subvolume delete "${old_snap}/snapshot" 2>/dev/null || true
+            if [ -d "${old_snap}/snapshot" ] && ! btrfs subvolume delete "${old_snap}/snapshot"; then
+                echo "[Limine-Sync] ERROR: failed to delete snapshot subvolume ${old_snap}/snapshot" >&2
+                exit 1
+            fi
             rm -rf "$old_snap"
         done
     fi
@@ -508,15 +534,21 @@ if [ -d "/.snapshots" ]; then
         info="${snap_dir}/info.xml"
 
         # CRITICAL FIX: Clear Btrfs read-only flag so booting into snapshot works immediately in RW mode
-        btrfs property set -ts "${snap_dir}/snapshot" ro false 2>/dev/null || true
+        if ! btrfs property set -ts "${snap_dir}/snapshot" ro false; then
+            echo "[Limine-Sync] ERROR: failed to clear the read-only flag on ${snap_dir}/snapshot" >&2
+            exit 1
+        fi
 
         date_str="$(grep -oPm1 '(?<=<date>)[^<]+' "$info" 2>/dev/null || echo 'Snapshot')"
         desc="$(grep -oPm1 '(?<=<description>)[^<]+' "$info" 2>/dev/null || echo 'APT')"
 
         # Detect the primary XanMod (or fallback) kernel present inside this snapshot's /lib/modules
-        snap_kver="$(ls -1 "${snap_dir}/snapshot/lib/modules" 2>/dev/null | grep -E 'xanmod|liquorix' | sort -V | tail -n1 || true)"
-        if [ -z "$snap_kver" ]; then
-            snap_kver="$(ls -1 "${snap_dir}/snapshot/lib/modules" 2>/dev/null | sort -V | tail -n1 || true)"
+        snap_kver=""
+        if [ -d "${snap_dir}/snapshot/lib/modules" ]; then
+            snap_kver="$(ls -1 "${snap_dir}/snapshot/lib/modules" | awk '/xanmod|liquorix/' | sort -V | tail -n1)"
+            if [ -z "$snap_kver" ]; then
+                snap_kver="$(ls -1 "${snap_dir}/snapshot/lib/modules" | sort -V | tail -n1)"
+            fi
         fi
 
         if [ -n "$snap_kver" ] && [ -f "${KERNEL_DIR}/vmlinuz-${snap_kver}" ] && [ -f "${KERNEL_DIR}/initrd.img-${snap_kver}" ]; then
@@ -540,7 +572,11 @@ fi
 
 # 4. Garbage-collect unreferenced versioned kernels on the EFI partition beyond MAX_HISTORICAL_KERNELS
 UNREF_KERNELS=()
-for vmlinuz_file in $(ls -1t "${KERNEL_DIR}"/vmlinuz-[0-9]* 2>/dev/null || true); do
+VERSIONED_KERNELS=()
+if compgen -G "${KERNEL_DIR}/vmlinuz-[0-9]*" >/dev/null; then
+    mapfile -t VERSIONED_KERNELS < <(ls -1t "${KERNEL_DIR}"/vmlinuz-[0-9]*)
+fi
+for vmlinuz_file in "${VERSIONED_KERNELS[@]}"; do
     ver="${vmlinuz_file#${KERNEL_DIR}/vmlinuz-}"
     if [ -z "${REFERENCED_KERNELS[$ver]:-}" ]; then
         UNREF_KERNELS+=("$ver")
@@ -570,11 +606,13 @@ chmod +x /usr/local/sbin/update-limine-snapshots
 
 mkdir -p /usr/share/novos
 cat << 'EOF' > /usr/share/novos/99-limine-snapshots.disabled
-DPkg::Post-Invoke { "if [ -x /usr/local/sbin/update-limine-snapshots ]; then /usr/local/sbin/update-limine-snapshots || true; fi"; };
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/update-limine-snapshots ]; then /usr/local/sbin/update-limine-snapshots; fi"; };
 EOF
 rm -f /etc/apt/apt.conf.d/99-limine-snapshots
 
 /usr/local/sbin/update-limine-snapshots
-gpgconf --kill all 2>/dev/null || true
+if command -v gpgconf >/dev/null 2>&1; then
+    gpgconf --kill all
+fi
 verify_stage3_post
 echo "==> [Stage 3] Core system, Dual Kernels, Mesa 26+, and Limine snapshot sync complete."
