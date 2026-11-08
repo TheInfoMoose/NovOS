@@ -84,12 +84,12 @@ cleanup() {
     if [[ -d "${MOUNT_ROOT}" ]]; then
         unmount_chroot_pseudo_fs "${MOUNT_ROOT}"
     fi
-    sync || true
-    if mountpoint -q "${MOUNT_ROOT}" 2>/dev/null; then
-        mount --make-rslave "${MOUNT_ROOT}" 2>/dev/null || true
-        umount -R "${MOUNT_ROOT}" 2>/dev/null || umount -R -lf "${MOUNT_ROOT}" 2>/dev/null || true
+    sync
+    if [[ -d "${MOUNT_ROOT}" ]] && mountpoint -q "${MOUNT_ROOT}"; then
+        mount --make-rslave "${MOUNT_ROOT}" || true # novos-allow: best-effort teardown
+        umount -R "${MOUNT_ROOT}" || umount -R -lf "${MOUNT_ROOT}" || true # novos-allow: best-effort teardown
     fi
-    udevadm settle 2>/dev/null || true
+    udevadm settle || true # novos-allow: best-effort teardown
 }
 trap cleanup EXIT
 
@@ -151,8 +151,8 @@ rm -f "$ISO_PATH" \
       "${REPO_ROOT}/build/novos.img" \
       "${REPO_ROOT}/build/novos-calamares-target.img" \
       "./build/novos.img" \
-      "./build/novos-calamares-target.img" 2>/dev/null || true
-rm -rf "${REPO_ROOT}/build/iso_work" "./build/iso_work" 2>/dev/null || true
+      "./build/novos-calamares-target.img"
+rm -rf "${REPO_ROOT}/build/iso_work" "./build/iso_work"
 
 # Third-party .deb artifact cache: Stage 6 exports every installed non-Debian .deb into it.
 # It is never purged; it accumulates across builds so later builds can hold a component.
@@ -182,7 +182,10 @@ run_in_chroot() {
         NOVOS_TARGET_MODE="${TARGET_MODE}" \
         /bin/bash -euo pipefail "$stage_script"
 
-    chroot "${MOUNT_ROOT}" /usr/bin/gpgconf --kill all 2>/dev/null || true
+    # gpgconf --kill all exits 0 when no agent is running; it is absent until gnupg is installed.
+    if [[ -x "${MOUNT_ROOT}/usr/bin/gpgconf" ]]; then
+        chroot "${MOUNT_ROOT}" /usr/bin/gpgconf --kill all
+    fi
 }
 
 # 3. Execute Stages 1 through 6 Sequentially (always fresh; no resume path)
@@ -196,9 +199,9 @@ echo "==> Cleaning up ISO staging directory ${MOUNT_ROOT}..."
 safe_remove_staging_dir "${MOUNT_ROOT}"
 
 # Restore invoking user's ownership on the built ISO so QEMU can run without root
-rm -f "${REPO_ROOT}/build/ovmf_vars.fd" 2>/dev/null || true
+rm -f "${REPO_ROOT}/build/ovmf_vars.fd"
 if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
-    chown "${SUDO_UID}:${SUDO_GID}" "$(dirname "$ISO_PATH")" "$ISO_PATH" 2>/dev/null || true
+    chown "${SUDO_UID}:${SUDO_GID}" "$(dirname "$ISO_PATH")" "$ISO_PATH"
 fi
 
 # 4. ISO Variance Lock (always runs; no skip path). Any package/binary drop or downgrade against

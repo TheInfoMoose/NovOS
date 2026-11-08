@@ -60,12 +60,12 @@ fi
 restore_target_state() {
     echo "==> [Stage 6] Cleaning up chroot mounts and temporary Live state on ${MOUNT_ROOT}..."
     if [[ -f "$FSTAB_BACKUP" ]]; then
-        cp -f "$FSTAB_BACKUP" "${MOUNT_ROOT}/etc/fstab" 2>/dev/null || true
-        rm -f "$FSTAB_BACKUP" 2>/dev/null || true
+        cp -f "$FSTAB_BACKUP" "${MOUNT_ROOT}/etc/fstab" || true # novos-allow: best-effort teardown
+        rm -f "$FSTAB_BACKUP"
     fi
     if [[ -f "$GREETD_BACKUP" ]]; then
-        cp -f "$GREETD_BACKUP" "${MOUNT_ROOT}/etc/greetd/config.toml" 2>/dev/null || true
-        rm -f "$GREETD_BACKUP" 2>/dev/null || true
+        cp -f "$GREETD_BACKUP" "${MOUNT_ROOT}/etc/greetd/config.toml" || true # novos-allow: best-effort teardown
+        rm -f "$GREETD_BACKUP"
     elif [[ -d "${MOUNT_ROOT}/etc/greetd" ]]; then
         cat << 'EOF' > "${MOUNT_ROOT}/etc/greetd/config.toml"
 [terminal]
@@ -76,12 +76,12 @@ command = "/usr/local/bin/cosmic-greeter-launch"
 user = "cosmic-greeter"
 EOF
     fi
-    chroot "${MOUNT_ROOT}" chown -R cosmic-greeter:cosmic-greeter /var/lib/cosmic-greeter /var/cache/tuigreet 2>/dev/null || true
+    # Greeter state ownership is set by Stage 4 (chown -R cosmic-greeter) and Stage 6 never changes it.
     rm -f "${MOUNT_ROOT}/etc/sudoers.d/99-novos-live" \
           "${MOUNT_ROOT}/etc/polkit-1/rules.d/49-novos-live-calamares.rules" \
           "${MOUNT_ROOT}/usr/share/applications/install-novos.desktop" \
           "${MOUNT_ROOT}/home/${DEFAULT_USER}/Desktop/install-novos.desktop" \
-          "${MOUNT_ROOT}/etc/skel/Desktop/install-novos.desktop" 2>/dev/null || true
+          "${MOUNT_ROOT}/etc/skel/Desktop/install-novos.desktop"
 
     unmount_chroot_pseudo_fs "${MOUNT_ROOT}"
 }
@@ -199,8 +199,11 @@ chroot "${MOUNT_ROOT}" /usr/bin/env -i \
     /bin/bash -euo pipefail -c '
         mkdir -p /run/dbus
         if [[ -x /usr/bin/dbus-daemon && ! -e /run/dbus/system_bus_socket ]]; then
-            rm -f /run/dbus/pid 2>/dev/null || true
-            /usr/bin/dbus-daemon --system --fork 2>/dev/null || true
+            rm -f /run/dbus/pid
+            if ! /usr/bin/dbus-daemon --system --fork; then
+                echo "[FATAL] system dbus-daemon failed to start in the chroot; package maintainer scripts need it." >&2
+                exit 1
+            fi
         fi
 
         apt-get update
@@ -394,7 +397,8 @@ if [[ -f "${MOUNT_ROOT}/boot/efi/kernels/primary.version" ]]; then
     PRIMARY_KVER="$(cat "${MOUNT_ROOT}/boot/efi/kernels/primary.version")"
 fi
 if [[ -z "$PRIMARY_KVER" ]]; then
-    PRIMARY_KVER="$(ls -1 "${MOUNT_ROOT}/lib/modules" | grep -E 'xanmod|liquorix' | sort -V | tail -n1 || true)"
+    # awk (not grep) so "no XanMod/Liquorix kernel" is an empty result for the fallback below, not a pipeline failure.
+    PRIMARY_KVER="$(ls -1 "${MOUNT_ROOT}/lib/modules" | sort -V | awk '/xanmod|liquorix/ {k = $0} END {print k}')"
 fi
 if [[ -z "$PRIMARY_KVER" ]]; then
     PRIMARY_KVER="$(ls -1 "${MOUNT_ROOT}/lib/modules" | sort -V | tail -n1)"
@@ -583,10 +587,10 @@ fi
 echo "[OK]   Artifact cache: ${#ARTIFACT_SOURCE[@]} third-party package(s); ${ARTIFACT_NEW} new, ${ARTIFACT_KEPT} already cached (${ARTIFACT_INDEX})"
 
 echo "==> [Stage 6.6] Cleaning APT Caches & Packing Staged Rootfs into SquashFS (${ISO_WORK}/live/filesystem.squashfs)..."
-chroot "${MOUNT_ROOT}" apt-get clean 2>/dev/null || true
+chroot "${MOUNT_ROOT}" apt-get clean
 rm -rf "${MOUNT_ROOT}/var/lib/apt/lists/"* \
        "${MOUNT_ROOT}/var/cache/apt/archives/"*.deb \
-       "${MOUNT_ROOT}/root/novos-build" 2>/dev/null || true
+       "${MOUNT_ROOT}/root/novos-build"
 
 # Back up build-time /etc/fstab and write a clean Live /etc/fstab so systemd-fstab-generator
 # in the Live ISO never blocks on build-time UUID= entries
@@ -704,7 +708,7 @@ xorriso -as mkisofs \
 "${MOUNT_ROOT}/usr/local/bin/limine" bios-install "$ISO_OUT"
 
 if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
-    chown "${SUDO_UID}:${SUDO_GID}" "$ISO_OUT" 2>/dev/null || true
+    chown "${SUDO_UID}:${SUDO_GID}" "$ISO_OUT"
 fi
 
 verify_stage7_post "$ISO_OUT"

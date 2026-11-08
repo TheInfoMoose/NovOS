@@ -44,33 +44,14 @@ fi
 if [[ -d "${REPO_ROOT}/calamares" ]]; then
     cp -rf "${REPO_ROOT}/calamares" "${MOUNT_ROOT}/root/novos-build/"
 fi
+# build-novos.sh (ensure_host_rust_binaries) always builds novos-custom-tools fresh with --locked
+# before Stage 1 and fails the build if it cannot; Stage 4 requires the staged copy. A missing
+# binary here is a broken orchestrator run, never something to rebuild or skip.
 if [[ ! -x "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-    CARGO_BIN=""
-    SUDO_HOME=""
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        SUDO_HOME="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
-    fi
-    if [[ -n "$SUDO_HOME" && -x "${SUDO_HOME}/.cargo/bin/cargo" ]]; then
-        CARGO_BIN="${SUDO_HOME}/.cargo/bin/cargo"
-    elif command -v cargo >/dev/null 2>&1; then
-        CARGO_BIN="$(command -v cargo)"
-    fi
-    if [[ -n "$CARGO_BIN" ]]; then
-        CARGO_ENV=()
-        if [[ -n "$SUDO_HOME" ]]; then
-            [[ -d "${SUDO_HOME}/.cargo" && -z "${CARGO_HOME:-}" ]] && CARGO_ENV+=("CARGO_HOME=${SUDO_HOME}/.cargo")
-            [[ -d "${SUDO_HOME}/.rustup" && -z "${RUSTUP_HOME:-}" ]] && CARGO_ENV+=("RUSTUP_HOME=${SUDO_HOME}/.rustup")
-        fi
-        env "${CARGO_ENV[@]}" "$CARGO_BIN" build --release --offline --manifest-path "${REPO_ROOT}/Cargo.toml" 2>/dev/null || \
-            env "${CARGO_ENV[@]}" "$CARGO_BIN" build --release --manifest-path "${REPO_ROOT}/Cargo.toml" || true
-        if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && -d "${REPO_ROOT}/target" ]]; then
-            chown -R "${SUDO_UID}:${SUDO_GID}" "${REPO_ROOT}/target" 2>/dev/null || true
-        fi
-    fi
+    echo "[FATAL] ${REPO_ROOT}/target/release/novos-custom-tools is missing; build-novos.sh builds it before Stage 1." >&2
+    exit 1
 fi
-if [[ -f "${REPO_ROOT}/target/release/novos-custom-tools" ]]; then
-    install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
-fi
+install -m 0755 "${REPO_ROOT}/target/release/novos-custom-tools" "${MOUNT_ROOT}/root/novos-build/target/release/novos-custom-tools"
 cp -f "${SCRIPT_DIR}/../lib/verify-deps.sh" "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
 chmod +x "${MOUNT_ROOT}/root/novos-build/scripts/stages/"*.sh "${MOUNT_ROOT}/root/novos-build/scripts/lib/verify-deps.sh"
 
