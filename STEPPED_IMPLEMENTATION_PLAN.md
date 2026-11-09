@@ -112,6 +112,7 @@
 * **Found 2026-11-08 (stale manifest counts):** after 10B, `verify-deps.sh --self-test` fails in `cargo test --workspace`: `crates/novos-custom-tools/src/packages.rs:1391` `real_manifest_loads_and_validates` asserts `entries == 286` / `unique_packages == 256`, but 15K's `ppp` entry made the real manifest 287 / 257 (`packages validate` reports both). 15K's POST_GATE ran `packages validate`, not `cargo test`, so the Rust gate has been red since 545983a. Fixed by STEP 15M.
 * **Decided 2026-11-08 (automation readiness):** for the unattended release pipeline (15D + `neb release` + containerized QEMU/LLM checks), three gaps are closed before 15D: (1) the step lock is owned by the session that set it, and automated event prompts never clear it (16A); a step-lock-free edit of `config/suppression-baseline.toml` is allowed only when every count decreases (16B); (2) a `# novos-allow:` line counts as approved only with a matching entry in the user-only `config/novos-allow-approved.toml` (16C; CLAUDE.md in 16D); agents and automation may propose entries, never write them; (3) pipeline failures are classified infra / component / unknown before anything reaches the failure ledger (15N); infra failures retry with backoff and are never recorded as a component hold; unknown stops for the user (13A and 15D amended). Containerized agents run in their own checkout, so each has its own `.claude/state`.
 * **Decided 2026-11-08 (10F teardown exceptions):** the user approved ("Approve all five") the five `# novos-allow: best-effort teardown` lines added by 10F: `scripts/build-novos.sh:89,90,92` (cleanup(): `mount --make-rslave`, `umount -R` chain, `udevadm settle`) and `scripts/stages/06-snapshot-finalize.sh:63,67` (restore_target_state fstab/greetd backup restore). After 16C they become the first entries the user writes into `config/novos-allow-approved.toml`.
+* **Found 2026-11-08 (ppp pin outlived):** the first fresh build after 10F failed Stage 3.2: sid rebuilt `network-manager` as 1.58.1-1+b1 with `Breaks: ppp (< 2.5.5-1+~)`, so the 15L pin (ppp=2.5.2-1+2) now conflicts. The pin's documented exit condition (sid's network-manager accepts sid's ppp 2.5.5-1+1) is met. The failure surfaced only as apt's resolver dump. STEP 15O clears the pin and makes a pin-related Stage 3.2 failure name the pin.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
 * **Before 13B:** `neb` feature work happens in `/srv/devshare/Nebulous` under that repo's own plan; confirm it may be scheduled there.
@@ -195,6 +196,7 @@ Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile
 | **STEP 10E** | COMPLETED **[USER BUILD] pending** (Stage 5 suppressions 70 → 0, forbidden 1 → 0, no novos-allow; install-time failures via run_or_record → 9F TSV; verifier PASS) | `/boost` | De-mask Stage 5 | `scripts/stages/05-profiles-installer.sh`, `config/suppression-baseline.toml` |
 | **STEP 10F** | COMPLETED **[USER BUILD] pending** (Stage 2 3→0, Stage 6 12→0, build-novos.sh 9→0, shellprocess-novos.conf 2→0; 5 user-approved best-effort-teardown novos-allow) | `/goal` | De-mask Stage 2/6 + orchestrator **[USER BUILD]** | `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/06-snapshot-finalize.sh`, `scripts/build-novos.sh`, `calamares/modules/shellprocess-novos.conf` (+ baseline) |
 | **STEP 15M** | COMPLETED (POST_GATE 0: fmt, clippy, cargo test, verify-deps --self-test) | `/goal` | Update stale manifest counts in the packages.rs real-manifest test (287 entries / 257 unique after 15K's ppp) | `crates/novos-custom-tools/src/packages.rs` |
+| **STEP 15O** | COMPLETED **[USER BUILD] pending** (POST_GATE 0: NOVOS_PINNED_PACKAGES cleared; Stage 3.2 install wrapped with pin-aware [FATAL] and apt exit code via PIPESTATUS[0]; 03-core-system.sh suppressions/forbidden stay 0) | `/goal` | Clear the outlived ppp pin; a pinned-install failure names the pin | `config/build.env`, `scripts/stages/03-core-system.sh` |
 
 ---
 
@@ -1317,6 +1319,41 @@ test "$(grep -E '\|\| (true|:)' calamares/modules/shellprocess-novos.conf | grep
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD (fresh 1–6 + QEMU install); errors previously masked are expected to surface.
+```
+
+---
+
+### STEP 15O: Clear the Outlived `ppp` Pin
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 15O: NOVOS_PINNED_PACKAGES is emptied now that sid's network-manager requires sid's ppp, and a Stage 3.2 install failure while a pin is active prints a [FATAL] that names the pin
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - config/build.env
+  - scripts/stages/03-core-system.sh
+READ_ONLY_REFS:
+  - Open Questions: "Found 2026-11-08 (ppp pin outlived)", "Found 2026-11-08 (ppp conflict, after 15K)"
+  - STEP 15L block (pin mechanism; stays in place)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. The 15L pin mechanism (Stage 3.1 source/preference writing, post-install verification and removal) stays; ppp stays declared (15K). No `|| true`.
+
+[PRE_GATE]
+grep -qx 'export NOVOS_PINNED_PACKAGES="ppp=2.5.2-1+2"' config/build.env && grep -q '^apt-get install -y --no-remove \\$' scripts/stages/03-core-system.sh && grep -q 'NOVOS_PINNED_PACKAGES' scripts/stages/03-core-system.sh
+
+[MUTATION_SPEC]
+1. config/build.env: `export NOVOS_PINNED_PACKAGES=""`. Update the comment: the ppp pin (2026-11-08, ppp=2.5.2-1+2) was cleared the same day once sid's network-manager 1.58.1-1+b1 required ppp >= 2.5.5-1+~; the mechanism stays for the next sid transition; NOVOS_PIN_SNAPSHOT is unused while the list is empty.
+2. 03-core-system.sh Stage 3.2: wrap the `apt-get install -y --no-remove ...` (same package list, same order) as `if ! apt-get install ...; then rc=$?; ...; exit "$rc"; fi`. When NOVOS_PINNED_PACKAGES is non-empty, print before exiting: `[FATAL] Stage 3.2 install failed while NOVOS_PINNED_PACKAGES='<list>' is active. If apt reports Breaks/Conflicts on a pinned package, sid has moved past the pin: clear NOVOS_PINNED_PACKAGES in config/build.env.` Always print `[FATAL] Stage 3.2 core package install failed (apt exit <rc>).`
+3. Keep the 15L verification block after the install unchanged (it is skipped when the list is empty).
+
+[POST_GATE]
+bash -n config/build.env && bash -n scripts/stages/03-core-system.sh && grep -qx 'export NOVOS_PINNED_PACKAGES=""' config/build.env && grep -q 'sid has moved past the pin' scripts/stages/03-core-system.sh && grep -q 'novos-snapshot-pin.list' scripts/stages/03-core-system.sh && grep -qE '^    btrfs-progs .* network-manager ppp inotify-tools ' scripts/stages/03-core-system.sh && bash -c 'source scripts/lib/verify-deps.sh && check_suppression_ratchet && check_forbidden_patterns'
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. Request USER BUILD: fresh `sudo ./scripts/build-novos.sh --target-iso ./build/NovOS-sid-amd64.iso`, then `python3 scripts/make-test-overlay-iso.py --iso ./build/NovOS-sid-amd64.iso` and `./scripts/test-docker-qemu.py --tier install-e2e --groups dev,network --iso ./build/NovOS-sid-amd64-test.iso`. Expected: no `[PIN]` lines; ppp 2.5.5-1+1 reported as an upgrade by the variance lock; this run also verifies 10A–10F.
 ```
 
 ---

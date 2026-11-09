@@ -100,12 +100,20 @@ dpkg --add-architecture i386
 apt-get update
 # ppp is declared explicitly: as a network-manager Recommends, apt silently skips it when sid has it
 # uninstallable (2026-11-08 drop); as an explicit package it fails this install instead.
-apt-get install -y --no-remove \
+if ! apt-get install -y --no-remove \
     tzdata locales passwd adduser sudo curl wget gpg ca-certificates git build-essential \
     kmod xz-utils zstd initramfs-tools-core udev klibc-utils busybox \
     btrfs-progs dosfstools parted fdisk gdisk efibootmgr snapper dracut network-manager ppp inotify-tools gawk coreutils \
     util-linux util-linux-extra systemd-timesyncd libpam-systemd dbus-user-session polkitd \
-    whiptail dialog debconf-utils python3 pciutils usbutils lsb-release
+    whiptail dialog debconf-utils python3 pciutils usbutils lsb-release; then
+    # $? after `if !` is the negated status (0); PIPESTATUS[0] holds apt's real exit code.
+    rc="${PIPESTATUS[0]}"
+    if [[ -n "${NOVOS_PINNED_PACKAGES:-}" ]]; then
+        echo "[FATAL] Stage 3.2 install failed while NOVOS_PINNED_PACKAGES='${NOVOS_PINNED_PACKAGES}' is active. If apt reports Breaks/Conflicts on a pinned package, sid has moved past the pin: clear NOVOS_PINNED_PACKAGES in config/build.env." >&2
+    fi
+    echo "[FATAL] Stage 3.2 core package install failed (apt exit ${rc})." >&2
+    exit "$rc"
+fi
 
 # Verify the snapshot-pinned versions, then drop the snapshot source and pin so the image ships neither.
 if [[ -n "${NOVOS_PINNED_PACKAGES:-}" ]]; then
