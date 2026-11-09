@@ -127,7 +127,7 @@
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 16B** | `/goal` | Decrease-only baseline edits allowed without a step lock | `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | — |
+| 1 | **STEP 16B** | `/goal` | Decrease-only baseline edits allowed without a step lock | `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** |
 | 2 | **STEP 16C** | `/boost` | `novos-allow` approval registry (user-only file) | `scripts/lib/verify-deps.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **[USER]** writes `config/novos-allow-approved.toml` after (approves the current `novos-allow` lines). |
 | 3 | **STEP 16D** | `/goal` | CLAUDE.md: lock ownership, decrease-only baseline, approval registry | `CLAUDE.md` | — |
 | 4 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |

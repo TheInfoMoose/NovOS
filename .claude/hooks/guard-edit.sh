@@ -49,6 +49,90 @@ is_conditional() {
     return 1
 }
 
+# STEP 16B: config/suppression-baseline.toml may be lowered outside a step that
+# lists it. Python builds the proposed file from the Edit/Write payload (stdin)
+# and compares it with the current file (argv[1]): same tables and keys, every
+# value an int >= 0 and <= its current value. Prints the first offence, exit 1.
+BASELINE_REL="config/suppression-baseline.toml"
+HOOK_INPUT=""
+BASELINE_PY='
+import json, sys, tomllib
+
+def fail(msg):
+    print(msg)
+    sys.exit(1)
+
+path = sys.argv[1]
+payload = json.load(sys.stdin)
+tool = payload.get("tool_name") or ""
+ti = payload.get("tool_input") or {}
+if tool not in ("", "Edit", "Write"):
+    fail(f"{tool} is not an Edit or Write")
+try:
+    with open(path, encoding="utf-8") as fh:
+        current_text = fh.read()
+except OSError as exc:
+    fail(f"cannot read the current file: {exc}")
+
+if tool != "Edit" and isinstance(ti.get("content"), str):
+    new_text = ti["content"]
+elif tool != "Write" and isinstance(ti.get("old_string"), str):
+    old = ti["old_string"]
+    new = ti.get("new_string")
+    if not isinstance(new, str):
+        fail("Edit has no new_string")
+    if not old or old not in current_text:
+        fail("old_string not found in the current file")
+    count = -1 if ti.get("replace_all") else 1
+    new_text = current_text.replace(old, new, count)
+else:
+    fail("payload is neither a Write (content) nor an Edit (old_string)")
+
+try:
+    current = tomllib.loads(current_text)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"current file does not parse: {exc}")
+try:
+    proposed = tomllib.loads(new_text)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"proposed content does not parse: {exc}")
+
+for table in current:
+    if table not in proposed:
+        fail(f"table [{table}] removed")
+for table in proposed:
+    if table not in current:
+        fail(f"table [{table}] added")
+for table, cur_keys in current.items():
+    new_keys = proposed[table]
+    if not isinstance(cur_keys, dict) or not isinstance(new_keys, dict):
+        fail(f"[{table}] is not a table")
+    for key in cur_keys:
+        if key not in new_keys:
+            fail(f"[{table}] key \"{key}\" removed")
+    for key in new_keys:
+        if key not in cur_keys:
+            fail(f"[{table}] key \"{key}\" added")
+    for key, cur in cur_keys.items():
+        val = new_keys[key]
+        if isinstance(val, bool) or not isinstance(val, int):
+            fail(f"[{table}] \"{key}\" = {val!r} is not an integer")
+        if val < 0:
+            fail(f"[{table}] \"{key}\" = {val} is negative")
+        if isinstance(cur, bool) or not isinstance(cur, int) or val > cur:
+            fail(f"[{table}] \"{key}\" = {val} is higher than the current {cur!r}")
+'
+
+# Returns 1 when the decrease-only path does not apply (other file, shell write,
+# no Edit/Write payload); blocks when it applies and the check fails; 0 = allowed.
+baseline_decrease_only() {
+    local rel="$1" abs="$2" out rc=0
+    [[ "$rel" == "$BASELINE_REL" && "$VIA_BASH" -eq 0 && -n "$HOOK_INPUT" ]] || return 1
+    out="$(python3 -I -c "$BASELINE_PY" "$abs" <<<"$HOOK_INPUT" 2>&1)" || rc=$?
+    [[ "$rc" -eq 0 ]] && return 0
+    block "suppression ratchet" "'$rel' outside a step that lists it may only lower counts (same tables and keys, integers >= 0): ${out}"
+}
+
 # True when rel is a protected path, lies inside one, or is an ancestor directory of one.
 is_always_protected() {
     local rel="$1" p
@@ -156,12 +240,14 @@ check_path() {
 
     if is_conditional "$rel"; then
         if [[ -z "$step" || "$step" == "PLAN" ]]; then
+            baseline_decrease_only "$rel" "$abs" && return 0
             block "protected file" "'$rel' may only change inside a step that lists it in ALLOWED_FILES"
         fi
         rc=0
         step_allows "$rel" "$step" || rc=$?
-        [[ "$rc" -eq 0 ]] || block "Locks §5" "'$rel' is not in STEP ${step} ALLOWED_FILES"
-        return 0
+        [[ "$rc" -eq 0 ]] && return 0
+        baseline_decrease_only "$rel" "$abs" && return 0
+        block "Locks §5" "'$rel' is not in STEP ${step} ALLOWED_FILES"
     fi
 
     [[ -z "$step" ]] && return 0  # conversation mode: only protected files are locked
@@ -201,6 +287,7 @@ if [[ "${1:-}" == "--check-path" ]]; then
 fi
 
 input="$(cat)"
+HOOK_INPUT="$input"
 file_path="$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")"
 hook_cwd="$(jq -r '.cwd // empty' <<<"$input")"
 [[ -z "$file_path" ]] && exit 0

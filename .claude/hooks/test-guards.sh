@@ -104,6 +104,15 @@ tools:
     enabled: true
     version: 1.4.0
 YAML
+cat > "${FIX}/config/suppression-baseline.toml" <<'TOML'
+# fixture baseline
+[suppressions]
+"scripts/a.sh" = 3
+"scripts/b.sh" = 0
+
+[forbidden]
+"scripts/a.sh" = 3
+TOML
 printf '# readme\n' > "${FIX}/README.md"
 git -C "$FIX" init -q
 git -C "$FIX" add -A
@@ -178,6 +187,58 @@ edit_case 0 "1A" STEPPED_IMPLEMENTATION_PLAN.md 'roadmap status update'
 edit_case 2 "9Z" scripts/a.sh
 edit_case 0 "PLAN" STEPPED_IMPLEMENTATION_PLAN.md
 edit_case 2 "PLAN" scripts/a.sh
+
+# Decrease-only baseline edits without a listing step (STEP 16B).
+# baseline_case <want> <step> <label> <tool_name> <tool_input-json-object>
+baseline_case() {
+    local want="$1" step="$2" label="$3" tool="$4" ti="$5" rc=0
+    set_step "$step"
+    jq -n --arg t "$tool" --argjson ti "$ti" --arg d "$FIX" \
+        '{tool_name:$t, tool_input:($ti + {file_path:"config/suppression-baseline.toml"}), cwd:$d}' \
+        | "${HOOK_DIR}/guard-edit.sh" >/dev/null 2>"${TMP}/err" || rc=$?
+    report "$([[ "$rc" -eq "$want" ]] && echo 1 || echo 0)" "guard-edit baseline want=${want} got=${rc} [${step:-none}] ${label}"
+}
+bl_write() {  # bl_write <suppressions-a> <suppressions-b> <forbidden-a> [extra line] -> Write payload
+    jq -n --arg c "$(printf '[suppressions]\n"scripts/a.sh" = %s\n"scripts/b.sh" = %s\n%s\n[forbidden]\n"scripts/a.sh" = %s\n' "$1" "$2" "${4:-}" "$3")" '{content:$c}'
+}
+bl_edit() {  # bl_edit <old> <new> [replace_all true|false] -> Edit payload
+    jq -n --arg o "$1" --arg n "$2" --argjson r "${3:-false}" '{old_string:$o, new_string:$n, replace_all:$r}'
+}
+
+baseline_case 0 ""   "Edit decrease"                 Edit  "$(bl_edit '"scripts/a.sh" = 3' '"scripts/a.sh" = 2')"
+baseline_case 0 ""   "Edit decrease replace_all"     Edit  "$(bl_edit '"scripts/a.sh" = 3' '"scripts/a.sh" = 1' true)"
+baseline_case 0 ""   "Write decrease"                Write "$(bl_write 2 0 1)"
+baseline_case 0 ""   "Write equal"                   Write "$(bl_write 3 0 3)"
+baseline_case 0 "2B" "decrease in a non-listing step" Edit "$(bl_edit '"scripts/a.sh" = 3' '"scripts/a.sh" = 0')"
+baseline_case 0 "PLAN" "decrease in plan mode"       Write "$(bl_write 3 0 2)"
+baseline_case 2 ""   "Edit increase"                 Edit  "$(bl_edit '"scripts/b.sh" = 0' '"scripts/b.sh" = 1')"
+baseline_case 2 ""   "Write increase"                Write "$(bl_write 4 0 3)"
+baseline_case 2 ""   "replace_all raises one table"  Edit  "$(bl_edit '= 3' '= 4' true)"
+baseline_case 2 ""   "new key"                       Write "$(bl_write 3 0 3 '"scripts/c.sh" = 0')"
+baseline_case 2 ""   "removed key"                   Edit  "$(bl_edit $'"scripts/b.sh" = 0\n' '')"
+baseline_case 2 ""   "removed table"                 Write "$(jq -n '{content:"[suppressions]\n\"scripts/a.sh\" = 3\n\"scripts/b.sh\" = 0\n"}')"
+baseline_case 2 ""   "new table"                     Write "$(bl_write 3 0 3 $'[extra]\n"x" = 0')"
+baseline_case 2 ""   "non-integer (string)"          Edit  "$(bl_edit '"scripts/a.sh" = 3' '"scripts/a.sh" = "2"')"
+baseline_case 2 ""   "non-integer (float)"           Write "$(bl_write 2.5 0 3)"
+baseline_case 2 ""   "non-integer (bool)"            Write "$(bl_write true 0 3)"
+baseline_case 2 ""   "negative"                      Write "$(bl_write -1 0 3)"
+baseline_case 2 ""   "unparsable"                    Write "$(jq -n '{content:"[suppressions\n\"scripts/a.sh\" = 1\n"}')"
+baseline_case 2 ""   "missing old_string"            Edit  "$(bl_edit '"scripts/z.sh" = 9' '"scripts/z.sh" = 0')"
+baseline_case 2 ""   "empty old_string"              Edit  "$(bl_edit '' 'x')"
+baseline_case 2 ""   "NotebookEdit"                  NotebookEdit '{"new_source":"x"}'
+baseline_case 2 ""   "no content or old_string"      Edit  '{"new_string":"x"}'
+baseline_case 0 "1A" "listing step allows increase"  Edit  "$(bl_edit '"scripts/b.sh" = 0' '"scripts/b.sh" = 9')"
+baseline_case 0 "1A" "listing step allows new key"   Write "$(bl_write 3 0 3 '"scripts/c.sh" = 7')"
+bash_case 2 ""   'sed -i s/=\ 3/=\ 2/ config/suppression-baseline.toml'
+bash_case 2 ""   "printf '[suppressions]\n' > config/suppression-baseline.toml"
+rc=0
+set_step ""
+"${HOOK_DIR}/guard-edit.sh" --check-path config/suppression-baseline.toml --cwd "$FIX" >/dev/null 2>"${TMP}/err" || rc=$?
+report "$([[ "$rc" -eq 2 ]] && echo 1 || echo 0)" "guard-edit --check-path baseline without a step stays blocked (got ${rc})"
+rc=0
+jq -n --arg d "$FIX" '{tool_name:"Edit",tool_input:{file_path:"config/app-health.toml",old_string:"a",new_string:"b"},cwd:$d}' \
+    | "${HOOK_DIR}/guard-edit.sh" >/dev/null 2>"${TMP}/err" || rc=$?
+report "$([[ "$rc" -eq 2 ]] && echo 1 || echo 0)" "guard-edit app-health.toml gains no decrease-only path (got ${rc})"
 
 # Live hook mode must ignore test overrides.
 rc=0
