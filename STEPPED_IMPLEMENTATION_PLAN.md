@@ -130,7 +130,7 @@
 | :---: | :--- | :---: | :--- | :--- | :--- |
 | 1 | **STEP 16B** | `/goal` | Decrease-only baseline edits allowed without a step lock | `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** |
 | 2 | **STEP 16C** | `/boost` | `novos-allow` approval registry (user-only file) | `scripts/lib/verify-deps.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** — **[USER]** writes `config/novos-allow-approved.toml` now (approves the current `novos-allow` lines). |
-| 3 | **STEP 16E** | `/boost` | Delegated step lock: owner keeps it to COMPLETED, "next step", proxy sessions | `.claude/hooks/step-lock.sh`, `.claude/hooks/test-guards.sh` | — |
+| 3 | **STEP 16E** | `/boost` | Delegated step lock: owner keeps it to COMPLETED, "next step", proxy sessions | `.claude/hooks/step-lock.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** |
 | 4 | **STEP 16D** | `/goal` | CLAUDE.md: lock ownership + delegation, decrease-only baseline, approval registry | `CLAUDE.md` | — |
 | 5 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
 | 6 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |

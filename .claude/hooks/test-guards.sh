@@ -39,7 +39,7 @@ report() {  # report <ok 0|1> <label>
 
 set_step() {
     if [[ -n "$1" ]]; then printf '%s\n' "$1" > "${NOVOS_GUARD_STATE}/active-step"; else rm -f "${NOVOS_GUARD_STATE}/active-step"; fi
-    rm -f "${NOVOS_GUARD_STATE}/active-step.owner"
+    rm -f "${NOVOS_GUARD_STATE}/active-step.owner" "${NOVOS_GUARD_STATE}/active-step.delegates"
 }
 
 # ------------------------------------------------------------------------------
@@ -48,6 +48,25 @@ set_step() {
 mkdir -p "${FIX}/.nebulous" "${FIX}/scripts" "${FIX}/config" "${FIX}/docs"
 cat > "${FIX}/STEPPED_IMPLEMENTATION_PLAN.md" <<'PLAN'
 # Fixture plan
+
+### Up Next
+
+| # | Step | Command | Scope | Target Files | Waits on |
+| :---: | :--- | :---: | :--- | :--- | :--- |
+| 1 | **STEP 4D** | `/goal` | Finished fixture step | `docs/` | **COMPLETED** |
+| 2 | **STEP 1A** | `/goal` | Open fixture step (scope text mentions COMPLETED) | `scripts/a.sh` | Fixture wait note |
+
+### Completed
+
+### STEP 4D: Completed fixture step
+
+```text
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - docs/ (whole directory)
+[POST_GATE]
+true
+```
 
 ### STEP 1A: In-scope test step
 
@@ -348,8 +367,8 @@ set_step ""
 lock_case 'Run STEP 1A' 1A 0
 lock_case 'continue' 1A 0
 lock_case '/boost STEP 2b' 2B 0
-lock_case "Don't run STEP 1A yet, just review it" - 0
-lock_case '/goal STEP 12AB' - 0
+lock_case "Don't run STEP 1A yet, just review it" 2B 0
+lock_case '/goal STEP 12AB' 2B 0
 lock_case '/plan-argon add a step' PLAN 0
 lock_case 'Please run the VM test.' - 1
 lock_case 'Do not run the VM test' - 0
@@ -377,7 +396,8 @@ slock_case() {  # slock_case <session-id or ""> <prompt> <want-step or -> <want-
 # (a) set + clear by the same session
 set_step ""
 slock_case sess-a '/goal STEP 1A' 1A sess-a "(a) set by sess-a"
-slock_case sess-a 'Commit it' - - "(a) clear by owner sess-a"
+slock_case sess-a 'Commit it' 1A sess-a "(a) owner reply keeps the step (16E)"
+slock_case sess-a 'release step' - - "(a) owner release clears"
 
 # (b) clear attempt from another session keeps the step
 slock_case sess-a '/goal STEP 1A' 1A sess-a "(b) set by sess-a"
@@ -406,9 +426,120 @@ slock_case sess-b '<cross-session-message>/boost STEP 2B' 1A sess-a "(d) event d
 # (e) missing session_id behaves as before
 set_step ""
 slock_case "" '/goal STEP 1A' 1A - "(e) set without session_id has no owner"
-slock_case sess-b 'Commit it' - - "(e) unowned step clears from any session"
+slock_case sess-b 'Commit it' 1A - "(e) unowned step: a reply keeps it (16E)"
+slock_case sess-b 'release step' - - "(e) unowned step: any session may release"
 slock_case "" 'Run STEP 2B' 2B - "(e) set without session_id"
-slock_case "" 'Commit it' - - "(e) clear without session_id"
+slock_case "" 'Commit it' 2B - "(e) reply without session_id keeps it (16E)"
+
+# ------------------------------------------------------------------------------
+# STEP 16E: owner keeps the lock to COMPLETED; next step; release; proxies.
+# ------------------------------------------------------------------------------
+ctx_case() {  # ctx_case <text> <label> ; checks the last slock_case output
+    report "$(grep -qF -- "$1" "${TMP}/out" && echo 1 || echo 0)" "step-lock ${2}: context has '${1}'"
+}
+deleg_case() {  # deleg_case <want, comma-joined or -> <label>
+    local got="-"
+    if [[ -f "${NOVOS_GUARD_STATE}/active-step.delegates" ]]; then
+        got="$(paste -sd, "${NOVOS_GUARD_STATE}/active-step.delegates")"
+    fi
+    report "$([[ "$got" == "$1" ]] && echo 1 || echo 0)" "step-lock ${2}: delegates=${got} (want ${1})"
+}
+HDR='Background (from the session that started this one):'
+
+# Verbs
+for p in 'Start on step 1A' 'Begin STEP 1a' 'please do step 1A' 'proceed with step 1A'; do
+    set_step ""
+    slock_case sess-a "$p" 1A sess-a "verb '${p}'"
+done
+
+# Owner PLAN lock still clears on a reply; owner keeps PLAN on 'continue'
+set_step ""
+slock_case sess-a '/plan-argon add 16F' PLAN sess-a "plan set"
+slock_case sess-a 'continue' PLAN sess-a "plan kept by 'continue'"
+slock_case sess-a 'ok, thanks' - - "plan cleared by owner reply"
+
+# Next step resolves the first non-COMPLETED Up Next row
+set_step ""
+slock_case sess-a 'Proceed with the next step in the plan in a new task card' 1A sess-a "next step"
+ctx_case 'Fixture wait note' "next step"
+sed -i 's/| Fixture wait note |/| **COMPLETED** |/' "${FIX}/STEPPED_IMPLEMENTATION_PLAN.md"
+set_step ""
+slock_case sess-a 'run the next step' - - "next step with none open"
+ctx_case 'no open row in Up Next' "next step with none open"
+git -C "$FIX" checkout -q -- STEPPED_IMPLEMENTATION_PLAN.md
+
+# COMPLETED row releases the lock on the next prompt from any session (event too)
+set_step ""
+slock_case sess-a '/goal STEP 4D' 4D sess-a "set a completed step"
+printf 'sess-c\n' > "${NOVOS_GUARD_STATE}/active-step.delegates"
+slock_case sess-b '<task-notification> done' - - "COMPLETED released by another session's event"
+ctx_case 'STEP 4D is COMPLETED; lock released' "COMPLETED release"
+deleg_case - "COMPLETED release removes delegates"
+
+# Release rules
+set_step ""
+slock_case sess-a '/goal STEP 1A' 1A sess-a "release: set"
+slock_case sess-b 'release step' 1A sess-a "release by non-owner refused"
+ctx_case 'owned by another session' "release by non-owner"
+slock_case sess-a 'release step 2B' 1A sess-a "release naming another ID"
+ctx_case 'not the active step' "release naming another ID"
+slock_case sess-a 'release step 1' 1A sess-a "release with a partial ID refused"
+slock_case sess-a 'stop step 1AX' 1A sess-a "release with a malformed ID refused"
+slock_case sess-a 'release step 1a.' - - "release naming the active ID (any case)"
+slock_case sess-a '/goal STEP 1A' 1A sess-a "release: set again"
+slock_case sess-a 'Abort the step' - - "owner abort"
+
+# Re-setting the active ID keeps owner and delegates (no session_id included)
+set_step ""
+slock_case sess-a '/goal STEP 1A' 1A sess-a "re-set: owner sets"
+printf 'sess-c\n' > "${NOVOS_GUARD_STATE}/active-step.delegates"
+slock_case "" '/goal STEP 1A' 1A sess-a "re-set without session_id keeps the owner"
+slock_case sess-a 'Run STEP 1A' 1A sess-a "owner re-set keeps the owner"
+deleg_case sess-c "re-set keeps delegates"
+
+# Switch rules
+set_step ""
+slock_case sess-a '/goal STEP 1A' 1A sess-a "switch: set"
+slock_case sess-b '/goal STEP 2B' 1A sess-a "non-owner switch refused"
+slock_case sess-b '/plan-argon x' 1A sess-a "non-owner /plan refused"
+slock_case sess-b 'run the next step' 1A sess-a "non-owner next step refused"
+printf 'sess-c\n' > "${NOVOS_GUARD_STATE}/active-step.delegates"
+slock_case sess-a '/boost STEP 2B' 2B sess-a "owner switch"
+deleg_case - "owner switch removes delegates"
+
+# Delegation (proxy)
+set_step ""
+slock_case sess-a '/goal STEP 1A' 1A sess-a "delegation: owner sets"
+brief="${HDR}"$'\nNovOS context paragraph.\n\n/boost STEP 1A\n\nRun it to POST_GATE.'
+slock_case sess-c "$brief" 1A sess-a "delegate joins"
+ctx_case 'proxy for STEP 1A' "delegate joins"
+deleg_case sess-c "delegate joins"
+slock_case sess-c "$brief" 1A sess-a "delegate joins twice"
+deleg_case sess-c "joining twice writes one line"
+slock_case sess-c 'Commit it' 1A sess-a "delegate reply changes nothing"
+slock_case sess-c '/goal STEP 2B' 1A sess-a "delegate switch refused"
+slock_case sess-c 'release step' 1A sess-a "delegate release refused"
+slock_case sess-f $'background (FROM the session that started this one):\n/boost STEP 1A' 1A sess-a "case-variant header"
+deleg_case sess-c "case-variant header does not join"
+slock_case sess-f "${HDR} "$'\n/boost STEP 1A' 1A sess-a "header with trailing space"
+deleg_case sess-c "header with trailing space does not join"
+slock_case sess-f $'Intro line\n'"${HDR}"$'\n/boost STEP 1A' 1A sess-a "header on line 2"
+deleg_case sess-c "header on line 2 does not join"
+slock_case sess-d "${HDR}"$'\nNo step line here.' 1A sess-a "header without a step line"
+deleg_case sess-c "header without a step line adds no delegate"
+slock_case sess-d "${HDR}"$'\n/goal STEP 2B' 1A sess-a "header + other ID"
+ctx_case 'no matching lock' "header + other ID"
+deleg_case sess-c "header + other ID adds no delegate"
+slock_case sess-e '/goal STEP 1A' 1A sess-a "non-owner /goal naming the active step"
+deleg_case sess-c,sess-e "non-owner /goal joins as delegate"
+slock_case sess-e 'Run STEP 1A' 1A sess-a "non-owner 'Run STEP' does not join"
+deleg_case sess-c,sess-e "non-owner 'Run STEP' adds no delegate"
+set_step ""
+slock_case sess-c "$brief" - - "delegation with no lock sets nothing"
+ctx_case 'no matching lock' "delegation with no lock"
+set_step PLAN
+slock_case sess-c "$brief" PLAN - "delegation under a PLAN lock sets nothing"
+deleg_case - "delegation under a PLAN lock adds no delegate"
 
 # ------------------------------------------------------------------------------
 total=$((pass + fail))
