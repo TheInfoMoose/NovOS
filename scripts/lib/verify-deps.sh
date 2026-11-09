@@ -111,8 +111,11 @@ verify_host_deps() {
     if ! check_forbidden_patterns; then
         ratchet_failed="true"
     fi
+    if ! check_allow_registry; then
+        ratchet_failed="true"
+    fi
     if [[ "$ratchet_failed" == "true" ]]; then
-        echo "[FATAL] Suppression ratchet / forbidden-pattern gate failed (config/suppression-baseline.toml); fix the source before building." >&2
+        echo "[FATAL] Suppression ratchet / forbidden-pattern / novos-allow registry gate failed (config/suppression-baseline.toml, config/novos-allow-approved.toml); fix the source or have the user approve the entries before building." >&2
         exit 1
     fi
 
@@ -1193,11 +1196,20 @@ check_netinstall_drift() {
 #                APT sources, partial stage builds). The single exempt line is
 #                the novos-markers.list source line in 05-profiles-installer.sh.
 #                Counts per file may only drop.
+#   allow registry (STEP 16C): an annotated suppression is a line the
+#                suppression rule exempts (regex match plus '# novos-allow:'),
+#                so nothing leaves the ratchet unapproved. Each needs an
+#                [[allow]] entry (file, line_sha256 = sha256 of the stripped
+#                line, reason) in the user-only config/novos-allow-approved.toml;
+#                a missing file means no approvals. Lines that only mention the
+#                marker without matching the suppression regex do not count.
 # Forbidden regexes use bracket classes so this file never matches itself.
-# Usage: _novos_ratchet_scan <print-baseline|check-suppressions|check-forbidden>
+# Usage: _novos_ratchet_scan <print-baseline|check-suppressions|check-forbidden|check-allow-registry|print-allow-entries>
 _novos_ratchet_scan() {
     python3 - "$VERIFY_REPO_ROOT" "$1" <<'PY'
 import glob
+import hashlib
+import json
 import os
 import re
 import sys
@@ -1205,6 +1217,8 @@ import tomllib
 
 root, mode = sys.argv[1], sys.argv[2]
 BASELINE_REL = "config/suppression-baseline.toml"
+ALLOW_REGISTRY_REL = "config/novos-allow-approved.toml"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SCAN_GLOBS = (
     "scripts/build-novos.sh",
     "scripts/stages/*.sh",
@@ -1258,6 +1272,89 @@ def suppression_hits(rel):
         for n, line in enumerate(read_lines(rel), 1)
         if SUPPRESSION_RE.search(line) and ALLOW_MARK not in line
     ]
+
+
+def annotated_hits(rel):
+    # Exactly the lines suppression_hits exempts.
+    return [
+        (n, line)
+        for n, line in enumerate(read_lines(rel), 1)
+        if SUPPRESSION_RE.search(line) and ALLOW_MARK in line
+    ]
+
+
+def line_digest(line):
+    return hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
+
+
+def allow_entry(rel, n, line):
+    reason = line.split(ALLOW_MARK, 1)[1].strip()
+    return "\n".join([
+        f"# {rel}:{n}: {line.strip()}",
+        "[[allow]]",
+        f"file = {json.dumps(rel)}",
+        f'line_sha256 = "{line_digest(line)}"',
+        f"reason = {json.dumps(reason)}",
+    ])
+
+
+def registry_fail(msg):
+    print(f"[FAIL] {ALLOW_REGISTRY_REL}: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_registry():
+    path = os.path.join(root, ALLOW_REGISTRY_REL)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        registry_fail(f"does not parse: {exc}")
+    entries = data.get("allow", [])
+    if not isinstance(entries, list):
+        registry_fail("'allow' must be an array of tables ([[allow]])")
+    for i, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            registry_fail(f"[[allow]] #{i} is not a table")
+        for field in ("file", "line_sha256", "reason"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                registry_fail(f"[[allow]] #{i} needs a non-empty string '{field}'")
+        if not SHA256_RE.match(entry["line_sha256"]):
+            registry_fail(f"[[allow]] #{i} line_sha256 must be 64 lowercase hex characters")
+    return entries
+
+
+def check_allow_registry():
+    entries = load_registry()
+    approved = {(e["file"], e["line_sha256"]) for e in (entries or [])}
+    used = set()
+    unapproved = []
+    total = 0
+    for rel in scan_files():
+        for n, line in annotated_hits(rel):
+            total += 1
+            key = (rel, line_digest(line))
+            if key in approved:
+                used.add(key)
+            else:
+                unapproved.append((rel, n, line))
+    for entry in entries or []:
+        if (entry["file"], entry["line_sha256"]) not in used:
+            print(f"[STALE] {ALLOW_REGISTRY_REL}: entry file={entry['file']} line_sha256={entry['line_sha256']} matches no annotated suppression", file=sys.stderr)
+    if unapproved:
+        if entries is None:
+            print(f"[FAIL] {ALLOW_REGISTRY_REL} is missing; no novos-allow annotation is approved", file=sys.stderr)
+        for rel, n, line in unapproved:
+            print(f"[FAIL] unapproved novos-allow: {rel}:{n}: {line.strip()}", file=sys.stderr)
+        print(f"[FAIL] {len(unapproved)} of {total} annotated suppression(s) unapproved. Entries for the user to review and add to {ALLOW_REGISTRY_REL} (agents never write it):", file=sys.stderr)
+        for rel, n, line in unapproved:
+            print("", file=sys.stderr)
+            print(allow_entry(rel, n, line), file=sys.stderr)
+        sys.exit(1)
+    print(f"[OK]   novos-allow registry: {total} annotated suppression(s), all approved in {ALLOW_REGISTRY_REL}")
 
 
 def forbidden_hits(rel):
@@ -1327,6 +1424,13 @@ elif mode == "check-suppressions":
     ratchet("suppressions", suppression_hits, "suppression", False)
 elif mode == "check-forbidden":
     ratchet("forbidden", forbidden_hits, "forbidden-pattern", True)
+elif mode == "check-allow-registry":
+    check_allow_registry()
+elif mode == "print-allow-entries":
+    blocks = [allow_entry(rel, n, line) for rel in scan_files() for n, line in annotated_hits(rel)]
+    print(f"# Proposed {ALLOW_REGISTRY_REL} entries: one per annotated suppression.")
+    print("# Review each; the user writes the approved ones to that file.")
+    print("\n\n".join(blocks))
 else:
     print(f"[FAIL] _novos_ratchet_scan: unknown mode '{mode}'", file=sys.stderr)
     sys.exit(2)
@@ -1343,6 +1447,15 @@ check_forbidden_patterns() {
 
 print_suppression_baseline() {
     _novos_ratchet_scan print-baseline
+}
+
+# STEP 16C: every annotated suppression needs a user-written approval entry.
+check_allow_registry() {
+    _novos_ratchet_scan check-allow-registry
+}
+
+print_allow_entries() {
+    _novos_ratchet_scan print-allow-entries
 }
 
 run_self_test() {
@@ -1530,6 +1643,10 @@ for required_tok in (
     if ! check_forbidden_patterns; then
         return 1
     fi
+    echo "==> [Self-Test] Checking novos-allow annotations against config/novos-allow-approved.toml..."
+    if ! check_allow_registry; then
+        return 1
+    fi
 
     echo "==> [Self-Test] Validating Host-Safety Invariants across scripts/..."
     local stage_and_top_scripts=()
@@ -1630,6 +1747,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         --print-suppression-baseline)
             print_suppression_baseline
             ;;
+        --print-allow-entries)
+            print_allow_entries
+            ;;
         --stage1-post)
             verify_stage1_post "${2:-}"
             ;;
@@ -1652,7 +1772,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             verify_stage7_post "${2:-}"
             ;;
         *)
-            echo "Usage: $0 {--self-test|--host-deps <iso|qemu>|--print-suppression-baseline|--stage[1-7]-post [mount_root|iso_path]}" >&2
+            echo "Usage: $0 {--self-test|--host-deps <iso|qemu>|--print-suppression-baseline|--print-allow-entries|--stage[1-7]-post [mount_root|iso_path]}" >&2
             exit 1
             ;;
     esac

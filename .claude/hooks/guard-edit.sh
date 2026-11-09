@@ -34,6 +34,7 @@ ALWAYS_PROTECTED=(
     ".nebulous/golden-snapshot.toml"
     ".nebulous/approvals.toml"
     ".nebulous/manifest.toml"
+    "config/novos-allow-approved.toml"
     "config/releases"
     ".tracker/release"
     ".claude/state"
@@ -204,7 +205,7 @@ check_path() {
         if [[ -n "$step" ]]; then
             block "Locks §5" "cannot resolve variable path '$p' during STEP ${step}; use a literal path"
         fi
-        if [[ "$p" =~ golden-snapshot|approvals\.toml|manifest\.toml|config/releases|\.tracker/release|\.claude/state ]]; then
+        if [[ "$p" =~ golden-snapshot|approvals\.toml|manifest\.toml|novos-allow-approved\.toml|config/releases|\.tracker/release|\.claude/state ]]; then
             block "protected file" "variable path '$p' may target a protected file"
         fi
         return 0
@@ -235,7 +236,7 @@ check_path() {
     fi
 
     if is_always_protected "$rel"; then
-        block "protected file" "'$rel' is user-only (golden snapshot / approvals / manifest / release records / hook state)"
+        block "protected file" "'$rel' is user-only (golden snapshot / approvals / manifest / novos-allow approval registry / release records / hook state)"
     fi
 
     if is_conditional "$rel"; then

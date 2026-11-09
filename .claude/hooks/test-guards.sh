@@ -81,6 +81,18 @@ READ_ONLY_REFS:
 true
 ```
 
+### STEP 3C: Step that (wrongly) lists the approval registry
+
+```text
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - config/novos-allow-approved.toml
+READ_ONLY_REFS:
+  - none
+[POST_GATE]
+true
+```
+
 ## APPROVED 2B
 PLAN
 printf 'golden = 1\n' > "${FIX}/.nebulous/golden-snapshot.toml"
@@ -239,6 +251,22 @@ rc=0
 jq -n --arg d "$FIX" '{tool_name:"Edit",tool_input:{file_path:"config/app-health.toml",old_string:"a",new_string:"b"},cwd:$d}' \
     | "${HOOK_DIR}/guard-edit.sh" >/dev/null 2>"${TMP}/err" || rc=$?
 report "$([[ "$rc" -eq 2 ]] && echo 1 || echo 0)" "guard-edit app-health.toml gains no decrease-only path (got ${rc})"
+
+# novos-allow approval registry is user-only in every mode (STEP 16C).
+for st in "" 1A 3C PLAN; do
+    edit_case 2 "$st" config/novos-allow-approved.toml '[[allow]]'
+    rc=0
+    set_step "$st"
+    jq -n --arg d "$FIX" '{tool_name:"Write",tool_input:{file_path:"config/novos-allow-approved.toml",content:"[[allow]]\n"},cwd:$d}' \
+        | "${HOOK_DIR}/guard-edit.sh" >/dev/null 2>"${TMP}/err" || rc=$?
+    report "$([[ "$rc" -eq 2 ]] && echo 1 || echo 0)" "guard-edit Write registry blocked [${st:-none}] (got ${rc})"
+    bash_case 2 "$st" "printf '[[allow]]\n' > config/novos-allow-approved.toml"
+done
+edit_case 2 "3C" "${FIX}/config/novos-allow-approved.toml" '[[allow]]'
+rc=0
+set_step ""
+"${HOOK_DIR}/guard-edit.sh" --check-path '$HOME/config/novos-allow-approved.toml' --cwd "$FIX" >/dev/null 2>"${TMP}/err" || rc=$?
+report "$([[ "$rc" -eq 2 ]] && echo 1 || echo 0)" "guard-edit variable path to registry blocked (got ${rc})"
 
 # Live hook mode must ignore test overrides.
 rc=0
