@@ -112,6 +112,7 @@
 * **Found 2026-11-08 (stale manifest counts):** after 10B, `verify-deps.sh --self-test` fails in `cargo test --workspace`: `crates/novos-custom-tools/src/packages.rs:1391` `real_manifest_loads_and_validates` asserts `entries == 286` / `unique_packages == 256`, but 15K's `ppp` entry made the real manifest 287 / 257 (`packages validate` reports both). 15K's POST_GATE ran `packages validate`, not `cargo test`, so the Rust gate has been red since 545983a. Fixed by STEP 15M.
 * **Decided 2026-11-08 (automation readiness):** for the unattended release pipeline (15D + `neb release` + containerized QEMU/LLM checks), three gaps are closed before 15D: (1) the step lock is owned by the session that set it, and automated event prompts never clear it (16A); a step-lock-free edit of `config/suppression-baseline.toml` is allowed only when every count decreases (16B); (2) a `# novos-allow:` line counts as approved only with a matching entry in the user-only `config/novos-allow-approved.toml` (16C; CLAUDE.md in 16D); agents and automation may propose entries, never write them; (3) pipeline failures are classified infra / component / unknown before anything reaches the failure ledger (15N); infra failures retry with backoff and are never recorded as a component hold; unknown stops for the user (13A and 15D amended). Containerized agents run in their own checkout, so each has its own `.claude/state`.
 * **Decided 2026-11-08 (10F teardown exceptions):** the user approved ("Approve all five") the five `# novos-allow: best-effort teardown` lines added by 10F: `scripts/build-novos.sh:89,90,92` (cleanup(): `mount --make-rslave`, `umount -R` chain, `udevadm settle`) and `scripts/stages/06-snapshot-finalize.sh:63,67` (restore_target_state fstab/greetd backup restore). After 16C they become the first entries the user writes into `config/novos-allow-approved.toml`.
+* **Decided 2026-11-09 (delegated step lock):** the step lock exists so plural sessions cannot break each other's (and Nebulous-driven) work. When the user has an agent start or delegate a step, that is implied permission: the initiating session owns the lock and has priority; a session it starts works as a proxy inside the same ALLOWED_FILES and can never set, switch, release or clear the lock. The owner keeps the lock until the step's row is COMPLETED, the owner switches step, or the owner says "abort/release step"; ordinary replies no longer clear it (they did under 16A, forcing a re-typed `/goal` after every answer). Found the same day: a task-card brief reaches step-lock with the app header `Background (from the session that started this one):` as its first line, so a `/boost STEP <ID>` brief never matched. STEP 16E implements this; 16D documents it.
 * **Found 2026-11-08 (ppp pin outlived):** the first fresh build after 10F failed Stage 3.2: sid rebuilt `network-manager` as 1.58.1-1+b1 with `Breaks: ppp (< 2.5.5-1+~)`, so the 15L pin (ppp=2.5.2-1+2) now conflicts. The pin's documented exit condition (sid's network-manager accepts sid's ppp 2.5.5-1+1) is met. The failure surfaced only as apt's resolver dump. STEP 15O clears the pin and makes a pin-related Stage 3.2 failure name the pin.
 * **Before 15D:** promotion must record and promote the production ISO, not the derived test ISO; the 15F-printed `filesystem.squashfs` hash ties the two together.
 * **Before 15D:** an install-time component that fails install-e2e can be identified (15E) but not held by the build. Decide how it is held back: an apt pin written into the target at install time, or report-only.
@@ -129,21 +130,22 @@
 | :---: | :--- | :---: | :--- | :--- | :--- |
 | 1 | **STEP 16B** | `/goal` | Decrease-only baseline edits allowed without a step lock | `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** |
 | 2 | **STEP 16C** | `/boost` | `novos-allow` approval registry (user-only file) | `scripts/lib/verify-deps.sh`, `.claude/hooks/guard-edit.sh`, `.claude/hooks/test-guards.sh` | **COMPLETED** — **[USER]** writes `config/novos-allow-approved.toml` now (approves the current `novos-allow` lines). |
-| 3 | **STEP 16D** | `/goal` | CLAUDE.md: lock ownership, decrease-only baseline, approval registry | `CLAUDE.md` | — |
-| 4 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
-| 5 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
-| 6 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
-| 7 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
-| 8 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
-| 9 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
-| 10 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
-| 11 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
-| 12 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
-| 13 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
-| 14 | **STEP 15N** | `/goal` | Pipeline failure classifier: infra / component / unknown | `scripts/lib/classify-failure.py` | — |
-| 15 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
-| 16 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
-| 17 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
+| 3 | **STEP 16E** | `/boost` | Delegated step lock: owner keeps it to COMPLETED, "next step", proxy sessions | `.claude/hooks/step-lock.sh`, `.claude/hooks/test-guards.sh` | — |
+| 4 | **STEP 16D** | `/goal` | CLAUDE.md: lock ownership + delegation, decrease-only baseline, approval registry | `CLAUDE.md` | — |
+| 5 | **STEP 11A** | `/goal` | Base workstation admin/storage set | `config/packages.yaml`, `scripts/stages/03-core-system.sh` | Your answer: "Before 11A" (base package set). |
+| 6 | **STEP 11B** | `/goal` | Native Steam + i386 libs; drop Flathub Steam | `config/packages.yaml`, `scripts/stages/05-profiles-installer.sh` | Your answer: "Before 11B" (Steam license preseed). |
+| 7 | **STEP 11C** | `/boost` | GUI app launch smoke test in QEMU harness | `scripts/test-docker-qemu.py`, `config/packages.yaml` | Your answer: "Before 11C/11D" (which COSMIC apps are broken). |
+| 8 | **STEP 11D** | `/goal` | Broken-app swap via user-committed health file **[USER BUILD]** | `crates/novos-custom-tools/src/packages.rs`, `config/app-health.toml` | Fresh build after (covers 11A–11D). |
+| 9 | **STEP 12A** | `/goal` | `snapshot.debian.org` archive selection | `config/build.env`, `scripts/stages/02-bootstrap-chroot.sh`, `scripts/stages/03-core-system.sh` | — |
+| 10 | **STEP 12C** | `/goal` | Pin Limine to a verified tag + commit **[USER BUILD]** | `config/build.env`, `scripts/stages/03-core-system.sh` | Fresh build after (covers 12A, 12C). |
+| 11 | **STEP 13A** | `/goal` | `neb release` interface contract + candidate lifecycle (amended 2026-11-07) | `docs/NEB_RELEASE_CONTRACT.md` | Your answer: "Before 13B" (schedule neb work in the Nebulous repo). |
+| 12 | **STEP 13B** | — | Implement contract in `/srv/devshare/Nebulous` (own plan) | Nebulous repo | Done in `/srv/devshare/Nebulous` under its own plan; NovOS waits here. |
+| 13 | **STEP 13C** | `/boost` | Switch callers to `neb release` | `scripts/build-novos.sh`, `scripts/lib/verify-deps.sh`, `.mcp.json` | — |
+| 14 | **STEP 12B** | `/boost` | Build against neb holds: `--hold-file`, `--pin-last-good`, `--pin-packages` (amended 2026-11-07) | `scripts/build-novos.sh`, `config/releases/README.md` | — |
+| 15 | **STEP 15N** | `/goal` | Pipeline failure classifier: infra / component / unknown | `scripts/lib/classify-failure.py` | — |
+| 16 | **STEP 15D** | `/boost` | `release-candidate.sh`: build → VM → auto-promote, bisect on failure **[USER BUILD]** | `scripts/release-candidate.sh` | Your answer: "Before 15D" (how a failing install-time component is held). Fresh build + VM after. |
+| 17 | **STEP 13D** | `/goal` | Migrate data to `.tracker`, retire Python Nebulous | `scripts/nebulous-ctl.py` (DEL), `scripts/mcp_nebulous_ci.py` (DEL), `.nebulous/*` (DEL) | — |
+| 18 | **STEP 14A** | `/goal` | Docs refresh | `docs/BUILD_AND_TEST.md`, `docs/ARCHITECTURE.md`, `docs/PROFILES.md` | — |
 
 Not yet planned (needs a step before it can enter the queue): `docker/Dockerfile.qemu-tester:19,34` still installs sshpass/openssh-client and exposes port 2222, unused since 15G.
 
@@ -1463,32 +1465,80 @@ Halt immediately after POST_GATE exits 0 and report verification status, includi
 
 ---
 
+### STEP 16E: Delegated Step Lock — Owner Keeps It, Delegated Sessions Act as Proxies
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 16E: the session whose user prompt set a step lock keeps it until the step is COMPLETED or the owner switches or releases it; "next step" resolves from the roadmap; a session the owner starts with a /goal|/boost STEP <ID> brief works as a proxy under the owner's lock; no other session can set, switch or clear an owned lock
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - .claude/hooks/step-lock.sh
+  - .claude/hooks/test-guards.sh
+READ_ONLY_REFS:
+  - .claude/hooks/guard-edit.sh, .claude/hooks/guard-bash.sh, .claude/hooks/guard-diff.sh (read `.claude/state/active-step`; unchanged)
+  - STEPPED_IMPLEMENTATION_PLAN.md roadmap format: Up Next rows `| <n> | **STEP <ID>** | ...`; a step is complete when a plan line naming `**STEP <ID>**` contains `COMPLETED`
+  - Open Questions: "Decided 2026-11-09 (delegated step lock)"
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. The model still cannot create authority: a lock is set only by a user prompt (its first line, including "next step"); a delegated brief only joins a lock the owner already holds. `.claude/state/active-step` keeps its one-line format; guard-edit keeps enforcing ALLOWED_FILES for every session (owner and delegates alike).
+
+[PRE_GATE]
+grep -q 'active-step.owner' .claude/hooks/step-lock.sh && grep -Eq '\*\*STEP 16C\*\*.*COMPLETED' STEPPED_IMPLEMENTATION_PLAN.md && bash .claude/hooks/test-guards.sh > /dev/null 2>&1
+
+[MUTATION_SPEC]
+1. Completion release: on every prompt (event prompts included), before mode handling: if active-step holds a step ID (not PLAN) and a plan line containing `**STEP <ID>**` also contains `COMPLETED`, remove active-step, active-step.owner and active-step.delegates; context "NovOS step-lock: STEP <ID> is COMPLETED; lock released."
+2. Ownership: this session is the owner when there is no owner file, no session_id, or the owner file equals session_id. While another session owns the lock, a step, plan, next-step or release command from this session changes nothing; context "NovOS step-lock: STEP <ID> stays active (owned by another session)". Only exception: joining as a proxy (item 5).
+3. Persistence: an owner's prompt that is not a command (step / next / plan / release / delegation / event) keeps a step lock (context "continuing STEP <ID>") instead of clearing it, so replies, button answers and "commit" no longer drop it. A PLAN lock keeps the 16A behaviour: the owner's non-command prompt clears it.
+4. Commands (first line, case-insensitive, optional leading "please"):
+   a. step: verbs `/goal|/boost|run|execute|start|begin|do|proceed [with]|continue [with]`, optional `on`, then `STEP <ID>` ("Start on step 16B" matches).
+   b. next: the same verbs, optional `on`/`with`, optional `the`, then `next step` → the ID of the first row of the table under `### Up Next` whose line does not contain `COMPLETED`; set it as in (a) and add that row's "Waits on" cell to the context. No such row → nothing set; the context says so.
+   c. release: `(abort|release|cancel|stop) [the] step [<ID>]` from the owner → remove the three state files; context "NovOS step-lock: STEP <ID> released." An ID that is not the active step → nothing changes.
+5. Delegation (proxy): the prompt's first line is exactly the app's delegated-session header `Background (from the session that started this one):` and a later line starts (after whitespace) with `/goal STEP <ID>` or `/boost STEP <ID>` (the first such line counts):
+   a. active-step == ID → append session_id to `${STATE_DIR}/active-step.delegates` (one per line, no duplicates); step and owner unchanged; context "NovOS step-lock: proxy for STEP <ID> (owned by another session). Edits are limited to its ALLOWED_FILES; halt after this POST_GATE:" plus the step's POST_GATE.
+   b. no lock, a PLAN lock, or a different ID → nothing changes; context "NovOS step-lock: delegated STEP <ID> has no matching lock from the initiating session; make no edits, report and halt."
+   c. header with no step line → a non-command prompt (item 3; it never clears a lock this session does not own).
+   A non-owner user prompt `/goal|/boost STEP <ID>` naming the active step also joins as a delegate (as 5a); naming a different ID is refused (item 2).
+6. Delegates never clear, switch, release or re-own a lock. Every release or owner switch removes active-step, active-step.owner and active-step.delegates together. allow_vm_test handling is unchanged. The step-lock.sh header comment describes the new rules.
+7. test-guards.sh: update the 16A cases whose expectation changes (owner's "Commit it" now keeps a step; PLAN still clears; unowned locks follow item 2's owner rule), and add cases for: start-on / begin / do verbs; next step resolves the first non-COMPLETED Up Next row (the fixture plan gains an Up Next table whose first row is COMPLETED) and reports when none is left; a COMPLETED row releases the lock on the next prompt from any session, an event prompt included; owner release, release naming another ID, non-owner release; owner switch allowed, non-owner switch and non-owner /plan refused; delegation header + matching step joins (delegates file written, owner unchanged); header + no lock / PLAN / other ID sets nothing; header without a step line keeps the lock; a delegate's later prompts change nothing; joining twice writes one line.
+
+[POST_GATE]
+bash -n .claude/hooks/step-lock.sh && bash .claude/hooks/test-guards.sh && grep -q 'active-step.delegates' .claude/hooks/step-lock.sh && grep -q 'from the session that started this one' .claude/hooks/step-lock.sh && grep -q 'Up Next' .claude/hooks/step-lock.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status. State that the delegation header was verified for fresh-context sessions only (2026-11-09 transcript of the 16C task card); fork-context briefs are unverified.
+```
+
+---
+
 ### STEP 16D: CLAUDE.md Documents Lock Ownership, Decrease-Only Baseline and the Approval Registry
 
 * **Recommended Command:** `/goal`
 
 ```text
 [STEP_ID]
-STEP 16D: CLAUDE.md §4 and §6 and the Parity Table describe 16A–16C
+STEP 16D: CLAUDE.md §4 and §6 and the Parity Table describe 16A–16C and 16E
 
 [SCOPE_LOCK]
 ALLOWED_FILES:
   - CLAUDE.md
 READ_ONLY_REFS:
-  - .claude/hooks/step-lock.sh, .claude/hooks/guard-edit.sh, scripts/lib/verify-deps.sh (as changed by 16A–16C)
+  - .claude/hooks/step-lock.sh, .claude/hooks/guard-edit.sh, scripts/lib/verify-deps.sh (as changed by 16A–16C and 16E)
+  - Open Questions: "Decided 2026-11-09 (delegated step lock)"
 FORBIDDEN_SCOPE:
   - Any file not listed in ALLOWED_FILES. No rule is weakened or dropped; only the three mechanisms are described.
 
 [PRE_GATE]
-grep -q 'active-step.owner' .claude/hooks/step-lock.sh && grep -q 'tomllib' .claude/hooks/guard-edit.sh && grep -q 'novos-allow-approved.toml' .claude/hooks/guard-edit.sh
+grep -q 'active-step.owner' .claude/hooks/step-lock.sh && grep -q 'tomllib' .claude/hooks/guard-edit.sh && grep -q 'novos-allow-approved.toml' .claude/hooks/guard-edit.sh && grep -q 'active-step.delegates' .claude/hooks/step-lock.sh
 
 [MUTATION_SPEC]
-1. §4 Scope lock: the active step belongs to the session whose prompt set it; other sessions' prompts and automated event prompts cannot clear it; containerized agents use their own checkout and state.
+1. §4 Scope lock: the active step belongs to the session whose user prompt set it (step command, including "start on" / "next step") and stays until its roadmap row is COMPLETED or the owner switches or says "abort/release step"; replies do not clear it. A session the owner starts with a `/goal|/boost STEP <ID>` brief joins as a proxy under the same ALLOWED_FILES and can never set, switch, release or clear the lock; other sessions' prompts and automated event prompts cannot change it; containerized agents use their own checkout and state.
 2. §6: a `# novos-allow:` is approved only by an entry the user writes in `config/novos-allow-approved.toml` (always protected; agents propose entries via `verify-deps.sh --print-allow-entries`); config/suppression-baseline.toml may be lowered without a step lock (decrease-only, enforced by guard-edit).
-3. Protected-files list: add `config/novos-allow-approved.toml` to "always". Parity Table: update the §5 Scope lock and suppression rows to name 16A–16C.
+3. Protected-files list: add `config/novos-allow-approved.toml` to "always". Parity Table: update the §5 Scope lock and suppression rows to name 16A–16C and 16E.
 
 [POST_GATE]
-grep -q 'novos-allow-approved.toml' CLAUDE.md && grep -q 'active-step.owner\|owned by the session' CLAUDE.md && grep -qi 'decrease-only' CLAUDE.md
+grep -q 'novos-allow-approved.toml' CLAUDE.md && grep -q 'active-step.owner\|owned by the session' CLAUDE.md && grep -qi 'decrease-only' CLAUDE.md && grep -qi 'proxy' CLAUDE.md
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
