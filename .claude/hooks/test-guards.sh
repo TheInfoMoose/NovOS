@@ -39,6 +39,7 @@ report() {  # report <ok 0|1> <label>
 
 set_step() {
     if [[ -n "$1" ]]; then printf '%s\n' "$1" > "${NOVOS_GUARD_STATE}/active-step"; else rm -f "${NOVOS_GUARD_STATE}/active-step"; fi
+    rm -f "${NOVOS_GUARD_STATE}/active-step.owner"
 }
 
 # ------------------------------------------------------------------------------
@@ -264,6 +265,61 @@ lock_case '/plan-argon add a step' PLAN 0
 lock_case 'Please run the VM test.' - 1
 lock_case 'Do not run the VM test' - 0
 lock_case 'Commit the working tree changes' - 0
+
+# Session-owned lock (STEP 16A): prompt + session_id -> expected step and owner.
+slock_case() {  # slock_case <session-id or ""> <prompt> <want-step or -> <want-owner or -> <label>
+    local sid="$1" prompt="$2" want_step="$3" want_owner="$4" label="$5" got_step="-" got_owner="-"
+    if [[ -n "$sid" ]]; then
+        jq -n --arg p "$prompt" --arg s "$sid" '{prompt:$p, session_id:$s}' \
+            | "${HOOK_DIR}/step-lock.sh" > "${TMP}/out" 2>"${TMP}/err"
+    else
+        jq -n --arg p "$prompt" '{prompt:$p}' | "${HOOK_DIR}/step-lock.sh" > "${TMP}/out" 2>"${TMP}/err"
+    fi
+    if [[ -f "${NOVOS_GUARD_STATE}/active-step" ]]; then
+        got_step="$(tr -d '[:space:]' < "${NOVOS_GUARD_STATE}/active-step")"
+    fi
+    if [[ -f "${NOVOS_GUARD_STATE}/active-step.owner" ]]; then
+        got_owner="$(tr -d '[:space:]' < "${NOVOS_GUARD_STATE}/active-step.owner")"
+    fi
+    report "$([[ "$got_step" == "$want_step" && "$got_owner" == "$want_owner" ]] && echo 1 || echo 0)" \
+        "step-lock ${label} -> step=${got_step} owner=${got_owner} (want ${want_step}/${want_owner})"
+}
+
+# (a) set + clear by the same session
+set_step ""
+slock_case sess-a '/goal STEP 1A' 1A sess-a "(a) set by sess-a"
+slock_case sess-a 'Commit it' - - "(a) clear by owner sess-a"
+
+# (b) clear attempt from another session keeps the step
+slock_case sess-a '/goal STEP 1A' 1A sess-a "(b) set by sess-a"
+slock_case sess-b 'Commit it' 1A sess-a "(b) clear by sess-b keeps step"
+report "$(grep -q 'stays active (owned by another session)' "${TMP}/out" && echo 1 || echo 0)" \
+    "step-lock (b) foreign clear emits stays-active context"
+slock_case "" 'Commit it' 1A sess-a "(b) clear without session_id keeps owned step"
+
+# (c) each event prefix keeps the step (from owner and non-owner sessions)
+for ev in '<side-sessions-event>' '<task-notification>' '<cross-session-message from="x">' '<ci-monitor-event>'; do
+    slock_case sess-a "${ev} session finished" 1A sess-a "(c) owner ${ev}"
+    slock_case sess-b "${ev} session finished" 1A sess-a "(c) other ${ev}"
+done
+printf '1\n' > "${NOVOS_GUARD_STATE}/allow_vm_test"
+slock_case sess-a '<ci-monitor-event> run the VM test' 1A sess-a "(c) event keeps step"
+report "$([[ "$(cat "${NOVOS_GUARD_STATE}/allow_vm_test")" == 0 ]] && echo 1 || echo 0)" \
+    "step-lock (c) event rewrites allow_vm_test to 0"
+
+# (d) an event prefix never sets a step, even when followed by a step command
+set_step ""
+slock_case sess-a '<side-sessions-event>/goal STEP 2B' - - "(d) event + /goal on first line"
+slock_case sess-a $'<task-notification>\n/goal STEP 2B' - - "(d) event + /goal on next line"
+slock_case sess-a '/goal STEP 1A' 1A sess-a "(d) set by sess-a"
+slock_case sess-b '<cross-session-message>/boost STEP 2B' 1A sess-a "(d) event does not re-own or switch"
+
+# (e) missing session_id behaves as before
+set_step ""
+slock_case "" '/goal STEP 1A' 1A - "(e) set without session_id has no owner"
+slock_case sess-b 'Commit it' - - "(e) unowned step clears from any session"
+slock_case "" 'Run STEP 2B' 2B - "(e) set without session_id"
+slock_case "" 'Commit it' - - "(e) clear without session_id"
 
 # ------------------------------------------------------------------------------
 total=$((pass + fail))
